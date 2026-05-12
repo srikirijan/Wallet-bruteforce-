@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Wallet Scanner</string>
+    <string name="title_activity_main">Wallet Scanner</string>
+    <string name="package_name">com.wallet.scanner</string>
+    <string name="custom_url_scheme">com.wallet.scanner</string>
+</resources>

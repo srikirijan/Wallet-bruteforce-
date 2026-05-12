@@ -1,0 +1,6 @@
+{
+  "name": "Crypto Sol Multi-Chain Wallet Scanner",
+  "description": "A simulated multi-chain wallet scanner for educational purposes, checking balances on Ethereum, Solana, Bitcoin, and more.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
