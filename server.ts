@@ -46,13 +46,14 @@ const RPC = {
     'https://bsc-rpc.publicnode.com'
   ].filter(Boolean) as string[],
   polygon: [
-    process.env.QUICKNODE_POLYGON_URL,
     'https://polygon-rpc.com',
-    'https://polygon.llamarpc.com',
+    'https://polygon-bor-rpc.publicnode.com',
+    'https://polygon.drpc.org',
     'https://rpc.ankr.com/polygon',
     'https://1rpc.io/matic',
     'https://polygon-mainnet.public.blastapi.io',
-    'https://rpc-mainnet.maticvigil.com'
+    'https://rpc-mainnet.maticvigil.com',
+    'https://polygon.gateway.tenderly.co'
   ].filter(Boolean) as string[],
   avalanche: [
     process.env.QUICKNODE_AVALANCHE_URL,
@@ -358,7 +359,10 @@ async function scanAllWallets(seedPhrase: string, networks: string[] = []) {
     balances[key] = { amount, value: amount * (PRICES as any)[priceKey || 'ethereum'] };
   });
 
-  const totalValue = Object.values(balances).reduce((sum, b: any) => sum + (b.value || 0), 0);
+  let totalValue = 0;
+  for (const b of Object.values(balances) as any[]) {
+      totalValue += (b.value || 0);
+  }
 
   return {
     seed: seedPhrase,
@@ -463,7 +467,7 @@ app.get('/api/rpc-status', async (req, res) => {
             const res = await axios.post(`${url}/wallet/getnowblock`, {}, { timeout: 3000 });
             if (res.data && (res.data.blockID || res.data.block_header)) success = true;
           } else {
-            const res = await axios.post(url, { jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }, { timeout: 3000 });
+            const res = await axios.post(url, { jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }, { timeout: 5000 });
             if (res.data?.result) success = true;
           }
           if (success) break;

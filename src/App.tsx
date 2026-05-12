@@ -39,15 +39,25 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [checked, setChecked] = useState(0); 
   const [found, setFound] = useState<any[]>(() => {
-    const saved = localStorage.getItem('foundWallets');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('foundWallets');
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   });
   const [totalValue, setTotalValue] = useState(() => {
-    const saved = localStorage.getItem('foundWallets');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return parsed.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
-    }
+    try {
+      const saved = localStorage.getItem('foundWallets');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
+        }
+      }
+    } catch {}
     return 0;
   }); 
   const [timeElapsed, setTimeElapsed] = useState(0); 
@@ -55,7 +65,9 @@ export default function App() {
   const [lastCheckTime, setLastCheckTime] = useState<string>('');
   const [recentSeeds, setRecentSeeds] = useState<any[]>([]);
   const [scanSpeed, setScanSpeed] = useState(0);
-  const workerRef = useRef<Worker | null>(null);
+  const workersRef = useRef<Worker[]>([]);
+  const lastCheckedRef = useRef(0);
+  const speedIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const renderIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const seedQueueRef = useRef<any[]>([]);
@@ -63,6 +75,8 @@ export default function App() {
   const initialTimeOffset = useRef(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const foundContainerRef = useRef<HTMLDivElement>(null);
+
+  const totalCheckedRef = useRef(0);
 
   const playAlertSound = useCallback(() => {
     try {
@@ -72,6 +86,55 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Initialize Workers
+  useEffect(() => {
+    const numWorkers = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
+    const newWorkers: Worker[] = [];
+
+    for (let i = 0; i < numWorkers; i++) {
+        try {
+          const scannerWorker = new Worker(new URL('./scannerWorker.ts', import.meta.url), { type: 'module' });
+          scannerWorker.onmessage = (e: MessageEvent) => {
+            const { type, data } = e.data;
+            if (type === 'result') {
+              totalCheckedRef.current += 1;
+              
+              seedQueueRef.current = [{
+                seed: data.seed,
+                totalValue: data.totalValue,
+                hasFunds: data.hasFunds,
+                balances: data.balances
+              }, ...seedQueueRef.current].slice(0, 100);
+
+              if (data.hasFunds) {
+                playAlertSound();
+                setFound(prev => [...prev, data]);
+                setTotalValue(prev => prev + data.totalValue);
+              }
+            }
+          };
+          newWorkers.push(scannerWorker);
+        } catch (err) {
+          console.error(`Failed to start worker ${i}`, err);
+        }
+    }
+    workersRef.current = newWorkers;
+
+    // Speed calculation
+    speedIntervalRef.current = setInterval(() => {
+        const current = totalCheckedRef.current;
+        const delta = current - lastCheckedRef.current;
+        lastCheckedRef.current = current;
+        setScanSpeed(delta);
+        setChecked(current);
+    }, 1000);
+
+    return () => {
+      workersRef.current.forEach(w => w.terminate());
+      if (speedIntervalRef.current) clearInterval(speedIntervalRef.current);
+    };
+  }, [playAlertSound]);
+
   const fetchRpcStatus = useCallback(async () => {
     try {
       const res = await axios.get(`${API_URL}/rpc-status`);
@@ -80,16 +143,17 @@ export default function App() {
     } catch {
       // If backend is missing (standalone), assume we are checking independently
       // or show a neutral state
-      if (!rpcStatus) {
-        setRpcStatus({
+      setRpcStatus((prev: any) => {
+        if (prev) return prev;
+        return {
            ethereum: { status: 'connected', latency: 150 },
            solana: { status: 'connected', latency: 200 },
            polygon: { status: 'connected', latency: 180 },
            tron: { status: 'connected', latency: 220 }
-        });
-      }
+        };
+      });
     }
-  }, [rpcStatus]);
+  }, []);
 
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -114,11 +178,11 @@ export default function App() {
 
   const checkStatus = useCallback(async () => {
     // Static time update for standalone mode
-    if (isScanning && startTimeRef.current) {
+    if (startTimeRef.current) {
       setTimeElapsed(initialTimeOffset.current + Math.floor((Date.now() - startTimeRef.current) / 1000));
     }
 
-    if (workerRef.current) return; // Worker handles its own status via messages
+    if (workersRef.current.length > 0) return; // Workers handle their own status via messages
 
     try {
       const res = await axios.get(`${API_URL}/scan/bg-status`);
@@ -149,44 +213,6 @@ export default function App() {
         }
       }
     } catch (e) {}
-  }, [isScanning, playAlertSound]);
-
-  // Initialize Worker
-  useEffect(() => {
-    // Check if worker file exists and we can create it
-    try {
-      const scannerWorker = new Worker(new URL('./scannerWorker.ts', import.meta.url), { type: 'module' });
-      workerRef.current = scannerWorker;
-
-      scannerWorker.onmessage = (e) => {
-        const { type, data } = e.data;
-        if (type === 'result') {
-          setChecked(prev => prev + 1);
-          
-          // Speed calculation
-          setScanSpeed(prev => (prev > 0 ? (prev + 0.1) / 1.1 : 0.01)); // Rough estimation if delta is missing
-
-          seedQueueRef.current = [...seedQueueRef.current, {
-            seed: data.seed,
-            totalValue: data.totalValue,
-            hasFunds: data.hasFunds,
-            balances: data.balances
-          }].slice(-200);
-
-          if (data.hasFunds) {
-            playAlertSound();
-            setFound(prev => [...prev, data]);
-            setTotalValue(prev => prev + data.totalValue);
-          }
-        }
-      };
-    } catch (err) {
-      console.error('Failed to start scanner worker', err);
-    }
-
-    return () => {
-      workerRef.current?.terminate();
-    };
   }, [playAlertSound]);
 
   useEffect(() => {
@@ -209,14 +235,14 @@ export default function App() {
     renderIntervalRef.current = setInterval(() => {
       if (seedQueueRef.current.length > 0) {
         const qLen = seedQueueRef.current.length;
-        // smooth drain: try to drain the queue evenly over the next ~800ms (40 ticks @ 20ms)
-        const itemsToTake = Math.max(1, Math.ceil(qLen / 30));
+        // smooth drain: try to drain more items if the queue is backing up
+        const itemsToTake = Math.max(1, Math.ceil(qLen / 10));
         const nextItems = seedQueueRef.current.splice(0, itemsToTake).map(i => ({...i, uid: Math.random().toString(36).substr(2, 9)}));
         setRecentSeeds(prev => {
-          return [...nextItems.reverse(), ...prev].slice(0, 50); // limit to 50 on screen to keep DOM fast
+          return [...nextItems.reverse(), ...prev].slice(0, 40); 
         });
       }
-    }, 20); // ~50 FPS
+    }, 40);
 
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -225,8 +251,8 @@ export default function App() {
   }, [checkStatus]);
 
   const startScanning = async () => {
-    if (workerRef.current) {
-      workerRef.current.postMessage({ type: 'start', networks: Array.from(selectedNetworks) });
+    if (workersRef.current.length > 0) {
+      workersRef.current.forEach(w => w.postMessage({ type: 'start', networks: Array.from(selectedNetworks) }));
       setIsScanning(true);
       startTimeRef.current = Date.now();
       return;
@@ -241,13 +267,14 @@ export default function App() {
   };
   
   const stopScanning = async () => {
-    if (workerRef.current) {
-      workerRef.current.postMessage({ type: 'stop' });
+    if (workersRef.current.length > 0) {
+      workersRef.current.forEach(w => w.postMessage({ type: 'stop' }));
       setIsScanning(false);
       if (startTimeRef.current) {
         initialTimeOffset.current += Math.floor((Date.now() - startTimeRef.current) / 1000);
         startTimeRef.current = null;
       }
+      setScanSpeed(0);
       return;
     }
 
@@ -412,7 +439,7 @@ export default function App() {
       <div className="bg-[#18181b] py-2 px-4 flex items-center justify-between text-[11px] text-[#a1a1aa] border-b border-black font-mono">
         <div className="flex items-center gap-2">
           <span className="text-[#38bdf8] font-bold">SPEED:</span>
-          <span className="text-white">{(scanSpeed * 60).toLocaleString()} WPM</span>
+          <span className="text-white">{scanSpeed.toLocaleString()} S/s</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-gray-500 uppercase">Total Checked:</span>

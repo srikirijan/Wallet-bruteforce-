@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer';
-(window as any).Buffer = Buffer;
+(globalThis as any).Buffer = Buffer;
 import { ethers } from 'ethers';
 import { Keypair } from '@solana/web3.js';
 import * as bip39 from 'bip39';
@@ -45,11 +45,13 @@ const RPC: Record<string, string[]> = {
   ],
   polygon: [
     'https://polygon-rpc.com',
-    'https://polygon.llamarpc.com',
+    'https://polygon-bor-rpc.publicnode.com',
+    'https://polygon.drpc.org',
     'https://rpc.ankr.com/polygon',
     'https://1rpc.io/matic',
     'https://polygon-mainnet.public.blastapi.io',
-    'https://rpc-mainnet.maticvigil.com'
+    'https://rpc-mainnet.maticvigil.com',
+    'https://polygon.gateway.tenderly.co'
   ],
   avalanche: [
     'https://api.avax.network/ext/bc/C/rpc',
@@ -193,7 +195,7 @@ async function checkSolanaBalance(address: string) {
   try {
     const res = await axios.post(getRpc('solana'), {
       jsonrpc: '2.0', id: 1, method: 'getBalance', params: [address]
-    }, { timeout: 800 });
+    }, { timeout: 1500 });
     return (res.data?.result?.value || 0) / 1e9;
   } catch { return 0; }
 }
@@ -202,28 +204,28 @@ async function checkEvmBalance(address: string, chain: string) {
   try {
     const res = await axios.post(getRpc(chain), {
       jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [address, "latest"]
-    }, { timeout: 800 });
+    }, { timeout: 2500 });
     return parseInt(res.data?.result || '0', 16) / 1e18;
   } catch { return 0; }
 }
 
 async function checkBitcoinBalance(address: string) {
   try {
-    const res = await axios.get(`https://blockchain.info/q/addressbalance/${address}`, { timeout: 800 });
+    const res = await axios.get(`https://blockchain.info/q/addressbalance/${address}`, { timeout: 1500 });
     return (Number(res.data) || 0) / 1e8;
   } catch { return 0; }
 }
 
 async function checkLitecoinBalance(address: string) {
   try {
-    const res = await axios.get(`https://api.blockcypher.com/v1/ltc/main/addrs/${address}/balance`, { timeout: 800 });
+    const res = await axios.get(`https://api.blockcypher.com/v1/ltc/main/addrs/${address}/balance`, { timeout: 1500 });
     return (res.data?.balance || 0) / 1e8;
   } catch { return 0; }
 }
 
 async function checkDogecoinBalance(address: string) {
   try {
-    const res = await axios.get(`https://dogechain.info/api/v1/address/balance/${address}`, { timeout: 800 });
+    const res = await axios.get(`https://dogechain.info/api/v1/address/balance/${address}`, { timeout: 1500 });
     const bal = res.data?.balance;
     return typeof bal === 'number' ? bal : 0;
   } catch { return 0; }
@@ -233,7 +235,7 @@ async function checkTronBalance(address: string) {
   try {
     const url = getRpc('tron');
     if (!url) return 0;
-    const res = await axios.post(`${url}/wallet/getaccount`, { address, visible: true }, { timeout: 1000 });
+    const res = await axios.post(`${url}/wallet/getaccount`, { address, visible: true }, { timeout: 2000 });
     const balance = res.data?.balance || 0;
     return balance / 1e6;
   } catch { return 0; }
@@ -244,7 +246,7 @@ async function checkXrpBalance(address: string) {
     const res = await axios.post('https://s1.ripple.com:51234/', {
       method: "account_info",
       params: [{ account: address, ledger_index: "validated" }]
-    }, { timeout: 800 });
+    }, { timeout: 1500 });
     const balanceDrops = res.data?.result?.account_data?.Balance;
     if (balanceDrops) {
       return Number(balanceDrops) / 1e6;
@@ -256,13 +258,24 @@ async function checkXrpBalance(address: string) {
 async function scanAllWallets(seedPhrase: string, networks: string[] = []) {
   const seedBuffer = bip39.mnemonicToSeedSync(seedPhrase);
   
-  const ethAddress = deriveEvmAddress(seedBuffer);
-  const solAddress = deriveSolanaAddress(seedBuffer);
-  const btcAddress = deriveBitcoinAddress(seedBuffer);
-  const ltcAddress = deriveLitecoinAddress(seedBuffer);
-  const dogeAddress = deriveDogecoinAddress(seedBuffer);
-  const tronAddress = deriveTronAddress(seedBuffer);
-  const xrpAddress = deriveXrpAddress(seedBuffer);
+  let ethAddress = null;
+  let solAddress = null;
+  let btcAddress = null;
+  let ltcAddress = null;
+  let dogeAddress = null;
+  let tronAddress = null;
+  let xrpAddress = null;
+
+  // Only derive if needed
+  if (networks.some(n => ['eth', 'bnb', 'polygon', 'avax', 'arb', 'op'].includes(n))) {
+      ethAddress = deriveEvmAddress(seedBuffer);
+  }
+  if (networks.includes('sol')) solAddress = deriveSolanaAddress(seedBuffer);
+  if (networks.includes('btc')) btcAddress = deriveBitcoinAddress(seedBuffer);
+  if (networks.includes('ltc')) ltcAddress = deriveLitecoinAddress(seedBuffer);
+  if (networks.includes('doge')) dogeAddress = deriveDogecoinAddress(seedBuffer);
+  if (networks.includes('trx')) tronAddress = deriveTronAddress(seedBuffer);
+  if (networks.includes('xrp')) xrpAddress = deriveXrpAddress(seedBuffer);
 
   const checks: Promise<any>[] = [];
   
@@ -312,7 +325,10 @@ async function scanAllWallets(seedPhrase: string, networks: string[] = []) {
     balances[key] = { amount, value: amount * (PRICES as any)[priceKey || 'ethereum'] };
   });
 
-  const totalValue = Object.values(balances).reduce((sum, b: any) => sum + (b.value || 0), 0);
+  let totalValue = 0;
+  for (const b of Object.values(balances) as any[]) {
+      totalValue += (b.value || 0);
+  }
 
   return {
     seed: seedPhrase,
@@ -326,6 +342,7 @@ async function scanAllWallets(seedPhrase: string, networks: string[] = []) {
 
 let isScanning = false;
 let currentNetworks: string[] = [];
+const CONCURRENCY = 12; // Balanced number of parallel scans per worker
 
 self.onmessage = async (e) => {
   const { type, networks } = e.data;
@@ -334,7 +351,13 @@ self.onmessage = async (e) => {
     isScanning = true;
     currentNetworks = networks;
     updatePrices();
-    runScan();
+    
+    // Start multiple parallel loops
+    for (let i = 0; i < CONCURRENCY; i++) {
+        runScan();
+        // Stagger slightly
+        await new Promise(r => setTimeout(r, 100));
+    }
   } else if (type === 'stop') {
     isScanning = false;
   }
@@ -347,10 +370,10 @@ async function runScan() {
       const result = await scanAllWallets(seed, currentNetworks);
       self.postMessage({ type: 'result', data: result });
       
-      // Jitter delay to avoid rate limits
-      await new Promise(r => setTimeout(r, Math.floor(Math.random() * 50) + 10));
+      // Minimum delay to let other events process
+      await new Promise(r => setTimeout(r, 20));
     } catch (e) {
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 }
