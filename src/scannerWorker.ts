@@ -342,7 +342,7 @@ async function scanAllWallets(seedPhrase: string, networks: string[] = []) {
 
 let isScanning = false;
 let currentNetworks: string[] = [];
-const CONCURRENCY = 12; // Balanced number of parallel scans per worker
+const CONCURRENCY = 25; // High performance parallel scans per worker
 
 self.onmessage = async (e) => {
   const { type, networks } = e.data;
@@ -355,8 +355,8 @@ self.onmessage = async (e) => {
     // Start multiple parallel loops
     for (let i = 0; i < CONCURRENCY; i++) {
         runScan();
-        // Stagger slightly
-        await new Promise(r => setTimeout(r, 100));
+        // Stagger slightly faster
+        await new Promise(r => setTimeout(r, 40));
     }
   } else if (type === 'stop') {
     isScanning = false;
@@ -370,10 +370,10 @@ async function runScan() {
       const result = await scanAllWallets(seed, currentNetworks);
       self.postMessage({ type: 'result', data: result });
       
-      // Minimum delay to let other events process
-      await new Promise(r => setTimeout(r, 20));
+      // Minimal delay to allow the worker to process 'stop' messages
+      await new Promise(r => setTimeout(r, 5));
     } catch (e) {
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 100));
     }
   }
 }

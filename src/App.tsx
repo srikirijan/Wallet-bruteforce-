@@ -88,7 +88,8 @@ export default function App() {
 
   // Initialize Workers
   useEffect(() => {
-    const numWorkers = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
+    // Increase worker count for I/O bound tasks
+    const numWorkers = Math.max(6, (navigator.hardwareConcurrency || 4));
     const newWorkers: Worker[] = [];
 
     for (let i = 0; i < numWorkers; i++) {
