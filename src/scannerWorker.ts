@@ -42,7 +42,7 @@ async function checkSolanaBalance(address: string, rpcs: string[]) {
       const host = new URL(url).hostname;
       self.postMessage({ type: 'log', data: `[REQ] ${address.substring(0, 8)}... > ${host}` });
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
       
       const res = await fetch(url, {
         method: 'POST',
@@ -56,6 +56,9 @@ async function checkSolanaBalance(address: string, rpcs: string[]) {
           params: [address]
         }),
         signal: controller.signal
+      }).catch(err => {
+        clearTimeout(timeoutId);
+        throw err;
       });
       
       clearTimeout(timeoutId);
@@ -84,7 +87,11 @@ async function checkSolanaBalance(address: string, rpcs: string[]) {
       }
     } catch (e: any) {
        // Ignore network errors or timeouts and try next RPC
-       self.postMessage({ type: 'log', data: `[ERR] Fetch > ${e.message || 'Timeout'}` });
+       let errorMsg = e.message || 'Network Error';
+       if (e.name === 'AbortError' || errorMsg.includes('aborted')) {
+         errorMsg = 'Timeout (Queued too long)';
+       }
+       self.postMessage({ type: 'log', data: `[ERR] Fetch > ${errorMsg}` });
        await new Promise(r => setTimeout(r, 200)); // small delay on hard network error
        lastError = e;
     }

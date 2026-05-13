@@ -6,16 +6,19 @@
 
 const DB_NAME = 'WalletScannerDB';
 const STORE_NAME = 'FoundWallets';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains('Config')) {
+        db.createObjectStore('Config');
       }
     };
 
@@ -71,6 +74,38 @@ export const Storage = {
     } catch (e) {
       console.warn('Storage not ready, using fallback');
       return [];
+    }
+  },
+
+  /**
+   * Saves config
+   */
+  async saveConfig(key: string, value: any): Promise<void> {
+    const db = await openDB();
+    const tx = db.transaction('Config', 'readwrite');
+    const store = tx.objectStore('Config');
+    return new Promise((resolve, reject) => {
+      const request = store.put(value, key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  /**
+   * Gets config
+   */
+  async getConfig(key: string): Promise<any> {
+    try {
+      const db = await openDB();
+      const tx = db.transaction('Config', 'readonly');
+      const store = tx.objectStore('Config');
+      return new Promise((resolve, reject) => {
+        const request = store.get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    } catch {
+      return null;
     }
   }
 };

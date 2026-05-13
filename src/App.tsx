@@ -10,14 +10,7 @@ const DEFAULT_RPCS = [
 ];
 
 export default function App() {
-  const [rpcs, setRpcs] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('solana_rpcs');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return DEFAULT_RPCS;
-  });
-  
+  const [rpcs, setRpcs] = useState<string[]>(DEFAULT_RPCS);
   const [newRpc, setNewRpc] = useState('https://rpc.ankr.com/solana_devnet/f3e259180317da53a5c632c93bc65741fe20493047543da9dccb2add3abd7095');
   const [isScanning, setIsScanning] = useState(false);
   const isScanningRef = useRef(false);
@@ -36,16 +29,29 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'network'>('scanner');
   const [networkLogs, setNetworkLogs] = useState<{uid: string, msg: string, time: number}[]>([]);
   const logQueueRef = useRef<{msg: string}[]>([]);
+  const wakeLockRef = useRef<any>(null);
+
+  const isInitialLoadRef = useRef(true);
 
   // Load initial data from mobile storage
   useEffect(() => {
     const loadSavedData = async () => {
+      // Load Wallets
       const savedWallets = await Storage.getFoundWallets();
       if (savedWallets.length > 0) {
         setFound(savedWallets);
         const value = savedWallets.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
         setTotalValue(value);
       }
+      
+      // Load Configs
+      const savedRpcs = await Storage.getConfig('rpcs');
+      if (savedRpcs) setRpcs(savedRpcs);
+      
+      const savedIntensity = await Storage.getConfig('scanIntensity');
+      if (savedIntensity) setScanIntensity(savedIntensity);
+      
+      isInitialLoadRef.current = false;
     };
     loadSavedData();
   }, []);
@@ -58,8 +64,16 @@ export default function App() {
   }, [found]);
 
   useEffect(() => {
-    localStorage.setItem('solana_rpcs', JSON.stringify(rpcs));
+    if (!isInitialLoadRef.current) {
+      Storage.saveConfig('rpcs', rpcs);
+    }
   }, [rpcs]);
+
+  useEffect(() => {
+    if (!isInitialLoadRef.current) {
+      Storage.saveConfig('scanIntensity', scanIntensity);
+    }
+  }, [scanIntensity]);
 
   // Check RPC health periodically
   useEffect(() => {
@@ -248,6 +262,46 @@ export default function App() {
     };
   }, [isScanning]);
 
+  const requestWakeLock = async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        // @ts-ignore
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+        console.log('Wake Lock active');
+      } catch (err: any) {
+        console.log(`Wake Lock error: ${err.message}`);
+      }
+    }
+  };
+
+  const releaseWakeLock = async () => {
+    if (wakeLockRef.current !== null) {
+      try {
+        await wakeLockRef.current.release();
+        wakeLockRef.current = null;
+        console.log('Wake Lock released');
+      } catch (err: any) {
+        console.log(`Wake Lock release error: ${err.message}`);
+      }
+    }
+  };
+
+  // Handle visibility change
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isScanning) {
+        requestWakeLock();
+      }
+      if (document.visibilityState === 'hidden') {
+        if (isScanning) {
+          logQueueRef.current.push({ msg: "[SYSTEM] App moved to background. Background processing is heavily restricted by mobile OS. Leave app open." });
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isScanning]);
+
   const startScanning = () => {
     // Only use RPCs that are actually connected or fall back to all if none are explicitly connected yet
     const connectedRpcs = rpcs.filter(r => rpcStatus[r]?.status === 'connected');
@@ -258,8 +312,11 @@ export default function App() {
       return;
     }
     
-    // Determine safe load based on user selection
-    const safeTotalConcurrency = Math.max(1, activeRpcs.length * scanIntensity);
+    // Determine safe load based on user selection, but clamp true concurrency to prevent socket exhaustion
+    let safeTotalConcurrency = Math.max(1, activeRpcs.length * scanIntensity);
+    if (safeTotalConcurrency > 150) {
+        safeTotalConcurrency = 150; // Max out at 150 concurrent sockets to prevent mobile browser crash
+    }
     const workersCount = workersRef.current.length || 1;
     // Distribute the concurrency load across all active workers
     const concurrencyPerWorker = Math.max(1, Math.ceil(safeTotalConcurrency / workersCount));
@@ -272,11 +329,13 @@ export default function App() {
     
     setIsScanning(true);
     startTimeRef.current = Date.now();
+    requestWakeLock();
   };
   
   const stopScanning = () => {
     workersRef.current.forEach(w => w.postMessage({ type: 'stop' }));
     setIsScanning(false);
+    releaseWakeLock();
     if (startTimeRef.current) {
       initialTimeOffset.current += Math.floor((Date.now() - startTimeRef.current) / 1000);
       startTimeRef.current = null;
@@ -333,6 +392,23 @@ export default function App() {
     setFound(newFound);
     const value = newFound.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
     setTotalValue(value);
+  };
+
+  const exportFoundWallets = () => {
+    if (found.length === 0) return;
+    let dataStr = "Wallet Seed Phrases - Scanner\n\n";
+    found.forEach(w => {
+      dataStr += `Seed: ${w.seed}\nTotal Value: $${w.totalValue.toFixed(2)}\nTokens: ${JSON.stringify(w.balances)}\nAddress: ${w.addresses?.solana}\nTimestamp: ${new Date(w.timestamp).toISOString()}\n\n`;
+    });
+    const blob = new Blob([dataStr], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `funded-wallets-${Date.now()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -401,7 +477,7 @@ export default function App() {
             <input 
               type="range" 
               min="1" 
-              max="50" 
+              max="200" 
               value={scanIntensity} 
               onChange={(e) => setScanIntensity(Number(e.target.value))} 
               disabled={isScanning}
@@ -547,9 +623,20 @@ export default function App() {
             <CheckCircle2 size={14} className="text-[#00FFA3]" />
             Found Assets
           </h2>
-          <span className="bg-[#00FFA3]/10 text-[#00FFA3] px-2 py-0.5 rounded text-[10px] font-bold border border-[#00FFA3]/20">
-            {found.length}
-          </span>
+          <div className="flex items-center gap-2">
+            {found.length > 0 && (
+              <button 
+                onClick={exportFoundWallets}
+                className="bg-[#333] hover:bg-[#444] text-white px-2 py-0.5 rounded flex items-center gap-1 text-[10px] font-bold border border-[#444] transition-colors"
+                title="Save wallets to file (No storage permission needed)"
+              >
+                <Download size={10} /> EXPORT
+              </button>
+            )}
+            <span className="bg-[#00FFA3]/10 text-[#00FFA3] px-2 py-0.5 rounded text-[10px] font-bold border border-[#00FFA3]/20">
+              {found.length}
+            </span>
+          </div>
         </div>
 
         {found.length === 0 ? (
