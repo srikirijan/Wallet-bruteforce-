@@ -1,48 +1,41 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { Send, Key, Check, Search, Shield, Download } from 'lucide-react';
-
-const API_URL = '/api';
-
-// Custom HD SVG Logos
-const LogoSvg = () => (
-  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M3 6h18M3 12h18M3 18h18" stroke="#38bdf8" strokeWidth="3" strokeLinecap="round" />
-    <path d="M3 6h12M3 12h10M3 18h14" stroke="#818cf8" strokeWidth="3" strokeLinecap="round" className="mix-blend-screen" />
-  </svg>
-);
-
-const ListCheckIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-[14px] h-[14px] text-[#38bdf8] fill-[#38bdf8]/20 shrink-0 mt-[1px]" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-    <path d="M9 12l2 2 4-4"/>
-  </svg>
-);
-
-const cryptoNetworks = [
-  { id: 'btc', name: 'Bitcoin', iconUrl: 'https://cryptologos.cc/logos/bitcoin-btc-logo.svg?v=025' },
-  { id: 'eth', name: 'Ethereum', iconUrl: 'https://cryptologos.cc/logos/ethereum-eth-logo.svg?v=025' },
-  { id: 'ltc', name: 'Litecoin', iconUrl: 'https://cryptologos.cc/logos/litecoin-ltc-logo.svg?v=025' },
-  { id: 'bnb', name: 'Binance', iconUrl: 'https://cryptologos.cc/logos/bnb-bnb-logo.svg?v=025' },
-  { id: 'xrp', name: 'Xrp', iconUrl: 'https://cryptologos.cc/logos/xrp-xrp-logo.svg?v=025' },
-  { id: 'sol', name: 'Solana', iconUrl: 'https://cryptologos.cc/logos/solana-sol-logo.svg?v=025' },
-  { id: 'trx', name: 'Tron', iconUrl: 'https://cryptologos.cc/logos/tron-trx-logo.svg?v=025' },
-  { id: 'arb', name: 'Arbitrum', iconUrl: 'https://cryptologos.cc/logos/arbitrum-arb-logo.svg?v=025' },
-  { id: 'doge', name: 'Doge', iconUrl: 'https://cryptologos.cc/logos/dogecoin-doge-logo.svg?v=025' },
-  { id: 'polygon', name: 'Polygon', iconUrl: 'https://cryptologos.cc/logos/polygon-matic-logo.svg?v=025' },
-  { id: 'avax', name: 'Avalanche', iconUrl: 'https://cryptologos.cc/logos/avalanche-avax-logo.svg?v=025' },
-  { id: 'op', name: 'Optimism', iconUrl: 'https://cryptologos.cc/logos/optimism-ethereum-op-logo.svg?v=025' },
-];
-
+import { Play, Square, Activity, Database, Trash2, Plus, Download, Key, Search, Copy, CheckCircle2 } from 'lucide-react';
 import { Storage } from './lib/storage';
 
+const DEFAULT_RPCS = [
+  'https://api.mainnet-beta.solana.com',
+  'https://rpc.ankr.com/solana',
+  'https://solana-rpc.publicnode.com'
+];
+
 export default function App() {
-  const [selectedNetworks, setSelectedNetworks] = useState<Set<string>>(new Set(cryptoNetworks.map(n => n.id)));
+  const [rpcs, setRpcs] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('solana_rpcs');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_RPCS;
+  });
+  
+  const [newRpc, setNewRpc] = useState('https://rpc.ankr.com/solana_devnet/f3e259180317da53a5c632c93bc65741fe20493047543da9dccb2add3abd7095');
   const [isScanning, setIsScanning] = useState(false);
+  const isScanningRef = useRef(false);
+  
+  useEffect(() => {
+    isScanningRef.current = isScanning;
+  }, [isScanning]);
+
   const [checked, setChecked] = useState(0); 
   const [found, setFound] = useState<any[]>([]);
   const [totalValue, setTotalValue] = useState(0); 
   const [timeElapsed, setTimeElapsed] = useState(0); 
+  const [rpcStatus, setRpcStatus] = useState<Record<string, { status: 'checking' | 'connected' | 'error', latency?: number }>>({});
+  const [isAddingRpc, setIsAddingRpc] = useState(false);
+  const [scanIntensity, setScanIntensity] = useState(10); // Default to 10 requests per connected node
+  const [activeTab, setActiveTab] = useState<'scanner' | 'network'>('scanner');
+  const [networkLogs, setNetworkLogs] = useState<{uid: string, msg: string, time: number}[]>([]);
+  const logQueueRef = useRef<{msg: string}[]>([]);
 
   // Load initial data from mobile storage
   useEffect(() => {
@@ -57,14 +50,89 @@ export default function App() {
     loadSavedData();
   }, []);
 
-  const [rpcStatus, setRpcStatus] = useState<any>(null);
-  const [lastCheckTime, setLastCheckTime] = useState<string>('');
+  // Update storage when found list changes
+  useEffect(() => {
+    if (found.length > 0) {
+      Storage.saveFoundWallets(found);
+    }
+  }, [found]);
+
+  useEffect(() => {
+    localStorage.setItem('solana_rpcs', JSON.stringify(rpcs));
+  }, [rpcs]);
+
+  // Check RPC health periodically
+  useEffect(() => {
+    let isMounted = true;
+    
+    const checkNodes = async () => {
+      setRpcStatus(prev => {
+        const result = { ...prev };
+        let changed = false;
+        rpcs.forEach(url => { 
+          if (!result[url]) {
+            result[url] = { status: 'checking' }; 
+            changed = true;
+          }
+        });
+        return changed ? result : prev;
+      });
+      
+      if (!navigator.onLine) {
+        if (isMounted) {
+          setRpcStatus(prev => {
+            const res = { ...prev };
+            rpcs.forEach(url => res[url] = { status: 'error' });
+            return res;
+          });
+        }
+        return;
+      }
+
+      for (const url of rpcs) {
+        try {
+          const start = Date.now();
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getVersion' }),
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.result) {
+              if (isMounted) setRpcStatus(prev => ({ ...prev, [url]: { status: 'connected', latency: Date.now() - start } }));
+            } else {
+              if (isMounted) setRpcStatus(prev => ({ ...prev, [url]: { status: 'error' } }));
+            }
+          } else {
+            if (isMounted) setRpcStatus(prev => ({ ...prev, [url]: { status: 'error' } }));
+          }
+        } catch (e) {
+          if (isMounted) setRpcStatus(prev => ({ ...prev, [url]: { status: 'error' } }));
+        }
+      }
+    };
+    
+    checkNodes();
+    const interval = setInterval(checkNodes, 15000); // Check every 15s
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [rpcs]);
+
   const [recentSeeds, setRecentSeeds] = useState<any[]>([]);
   const [scanSpeed, setScanSpeed] = useState(0);
   const workersRef = useRef<Worker[]>([]);
   const lastCheckedRef = useRef(0);
   const speedIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const renderIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const seedQueueRef = useRef<any[]>([]);
   const startTimeRef = useRef<number | null>(null);
@@ -84,7 +152,6 @@ export default function App() {
 
   // Initialize Workers
   useEffect(() => {
-    // Increase worker count for I/O bound tasks
     const numWorkers = Math.max(6, (navigator.hardwareConcurrency || 4));
     const newWorkers: Worker[] = [];
 
@@ -108,6 +175,11 @@ export default function App() {
                 setFound(prev => [...prev, data]);
                 setTotalValue(prev => prev + data.totalValue);
               }
+            } else if (type === 'log') {
+              logQueueRef.current.push({ msg: data });
+              if (logQueueRef.current.length > 500) {
+                 logQueueRef.current = logQueueRef.current.slice(-500); // Prevent overflow
+              }
             }
           };
           newWorkers.push(scannerWorker);
@@ -117,7 +189,6 @@ export default function App() {
     }
     workersRef.current = newWorkers;
 
-    // Speed calculation
     speedIntervalRef.current = setInterval(() => {
         const current = totalCheckedRef.current;
         const delta = current - lastCheckedRef.current;
@@ -132,26 +203,6 @@ export default function App() {
     };
   }, [playAlertSound]);
 
-  const fetchRpcStatus = useCallback(async () => {
-    try {
-      const res = await axios.get(`${API_URL}/rpc-status`);
-      setRpcStatus(res.data);
-      setLastCheckTime(new Date().toLocaleTimeString());
-    } catch {
-      // If backend is missing (standalone), assume we are checking independently
-      // or show a neutral state
-      setRpcStatus((prev: any) => {
-        if (prev) return prev;
-        return {
-           ethereum: { status: 'connected', latency: 150 },
-           solana: { status: 'connected', latency: 200 },
-           polygon: { status: 'connected', latency: 180 },
-           tron: { status: 'connected', latency: 220 }
-        };
-      });
-    }
-  }, []);
-
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -159,389 +210,405 @@ export default function App() {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const formatNumber = (num: number) => num.toString();
-
-  const exportWallets = () => {
-    if (found.length === 0) return;
-    const content = found.map(f => `Seed: ${f.seed}\nValue: $${f.totalValue.toFixed(2)}\nTime: ${new Date(f.timestamp).toLocaleString()}\n`).join('\n---\n\n');
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `found_wallets_${new Date().getTime()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const checkStatus = useCallback(async () => {
-    // Static time update for standalone mode
-    if (startTimeRef.current) {
-      setTimeElapsed(initialTimeOffset.current + Math.floor((Date.now() - startTimeRef.current) / 1000));
-    }
-
-    if (workersRef.current.length > 0) return; // Workers handle their own status via messages
-
-    try {
-      const res = await axios.get(`${API_URL}/scan/bg-status`);
-      const data = res.data;
-      
-      setIsScanning(data.isScanning);
-      if (data.isScanning) {
-        if (!startTimeRef.current) startTimeRef.current = Date.now();
-        
-        setChecked(prev => prev + data.checkedDelta);
-        setScanSpeed(data.checkedDelta);
-        if (data.recentSeeds && data.recentSeeds.length > 0) {
-          const chronologicalBatch = [...data.recentSeeds].reverse();
-          seedQueueRef.current = [...seedQueueRef.current, ...chronologicalBatch].slice(-200);
-        }
-        
-        if (data.newFound && data.newFound.length > 0) {
-          playAlertSound();
-          setFound(prev => [...prev, ...data.newFound]);
-          const addValue = data.newFound.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
-          setTotalValue(prev => prev + addValue);
-        }
-      } else {
-        setScanSpeed(0);
-        if (startTimeRef.current) {
-          initialTimeOffset.current += Math.floor((Date.now() - startTimeRef.current) / 1000);
-          startTimeRef.current = null;
-        }
+  useEffect(() => {
+    // Statical time update for UI
+    const tick = setInterval(() => {
+      if (startTimeRef.current && isScanning) {
+        setTimeElapsed(initialTimeOffset.current + Math.floor((Date.now() - startTimeRef.current) / 1000));
       }
-    } catch (e) {}
-  }, [playAlertSound]);
+    }, 1000);
 
-  useEffect(() => {
-    fetchRpcStatus();
-    const interval = setInterval(fetchRpcStatus, 30000);
-    return () => clearInterval(interval);
-  }, [fetchRpcStatus]);
-  // Update storage when found list changes
-  useEffect(() => {
-    if (found.length > 0) {
-      Storage.saveFoundWallets(found);
-    }
-    
-    // Auto scroll to bottom
-    if (foundContainerRef.current) {
-      foundContainerRef.current.scrollTop = foundContainerRef.current.scrollHeight;
-    }
-  }, [found]);
-
-  useEffect(() => {
-    checkStatus();
-    pollIntervalRef.current = setInterval(checkStatus, 1000);
     renderIntervalRef.current = setInterval(() => {
       if (seedQueueRef.current.length > 0) {
         const qLen = seedQueueRef.current.length;
-        // smooth drain: try to drain more items if the queue is backing up
         const itemsToTake = Math.max(1, Math.ceil(qLen / 10));
         const nextItems = seedQueueRef.current.splice(0, itemsToTake).map(i => ({...i, uid: Math.random().toString(36).substr(2, 9)}));
         setRecentSeeds(prev => {
           return [...nextItems.reverse(), ...prev].slice(0, 40); 
         });
       }
+
+      if (logQueueRef.current.length > 0) {
+        const qLen = logQueueRef.current.length;
+        const itemsToTake = Math.max(1, Math.ceil(qLen / 5));
+        const nextItems = logQueueRef.current.splice(0, itemsToTake).map(i => ({
+            uid: Math.random().toString(36).substring(2,9),
+            msg: i.msg,
+            time: Date.now()
+        }));
+        setNetworkLogs(prev => {
+          return [...nextItems.reverse(), ...prev].slice(0, 100);
+        });
+      }
     }, 40);
 
     return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      clearInterval(tick);
       if (renderIntervalRef.current) clearInterval(renderIntervalRef.current);
     };
-  }, [checkStatus]);
+  }, [isScanning]);
 
-  const startScanning = async () => {
-    if (workersRef.current.length > 0) {
-      workersRef.current.forEach(w => w.postMessage({ type: 'start', networks: Array.from(selectedNetworks) }));
-      setIsScanning(true);
-      startTimeRef.current = Date.now();
+  const startScanning = () => {
+    // Only use RPCs that are actually connected or fall back to all if none are explicitly connected yet
+    const connectedRpcs = rpcs.filter(r => rpcStatus[r]?.status === 'connected');
+    const activeRpcs = connectedRpcs.length > 0 ? connectedRpcs : rpcs;
+
+    if (activeRpcs.length === 0) {
+      alert("Please add at least one RPC node.");
       return;
     }
     
-    // Fallback if worker fails (legacy)
-    try {
-      await axios.post(`${API_URL}/scan/bg-start`, { networks: Array.from(selectedNetworks) });
-      setIsScanning(true);
-      startTimeRef.current = Date.now();
-    } catch (e) {}
+    // Determine safe load based on user selection
+    const safeTotalConcurrency = Math.max(1, activeRpcs.length * scanIntensity);
+    const workersCount = workersRef.current.length || 1;
+    // Distribute the concurrency load across all active workers
+    const concurrencyPerWorker = Math.max(1, Math.ceil(safeTotalConcurrency / workersCount));
+
+    workersRef.current.forEach(w => w.postMessage({ 
+      type: 'start', 
+      rpcs: activeRpcs,
+      concurrency: concurrencyPerWorker
+    }));
+    
+    setIsScanning(true);
+    startTimeRef.current = Date.now();
   };
   
-  const stopScanning = async () => {
-    if (workersRef.current.length > 0) {
-      workersRef.current.forEach(w => w.postMessage({ type: 'stop' }));
-      setIsScanning(false);
-      if (startTimeRef.current) {
-        initialTimeOffset.current += Math.floor((Date.now() - startTimeRef.current) / 1000);
-        startTimeRef.current = null;
-      }
-      setScanSpeed(0);
-      return;
+  const stopScanning = () => {
+    workersRef.current.forEach(w => w.postMessage({ type: 'stop' }));
+    setIsScanning(false);
+    if (startTimeRef.current) {
+      initialTimeOffset.current += Math.floor((Date.now() - startTimeRef.current) / 1000);
+      startTimeRef.current = null;
     }
-
-    try {
-      await axios.post(`${API_URL}/scan/bg-stop`);
-      setIsScanning(false);
-      if (startTimeRef.current) {
-        initialTimeOffset.current += Math.floor((Date.now() - startTimeRef.current) / 1000);
-        startTimeRef.current = null;
-      }
-    } catch (e) {}
+    setScanSpeed(0);
   };
 
-  const toggleNetwork = (id: string) => {
-    setSelectedNetworks(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const testRpcConnection = async (url: string) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getVersion' }),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (res.ok) {
+        const data = await res.json();
+        return !!data?.result;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const addRpc = async () => {
+    if (newRpc && !rpcs.includes(newRpc)) {
+      setIsAddingRpc(true);
+      const isConnected = await testRpcConnection(newRpc);
+      setIsAddingRpc(false);
+      
+      if (isConnected) {
+        setRpcs([...rpcs, newRpc]);
+        setNewRpc('');
+      } else {
+        alert("Could not connect to this RPC node. Please verify the URL or try another.");
+      }
+    }
+  };
+
+  const removeRpc = (url: string) => {
+    setRpcs(rpcs.filter(r => r !== url));
+  };
+  
+  const removeWallet = (index: number) => {
+    const newFound = [...found];
+    newFound.splice(index, 1);
+    setFound(newFound);
+    const value = newFound.reduce((sum: number, b: any) => sum + (b.totalValue || 0), 0);
+    setTotalValue(value);
   };
 
   return (
-    <div className="min-h-screen bg-[#131417] text-gray-300 font-sans mx-auto w-full md:max-w-md flex flex-col relative h-screen text-sm overflow-hidden md:border-x border-black/50">
+    <div className="min-h-screen bg-[#0A0A0A] text-gray-300 font-sans mx-auto w-full md:max-w-md flex flex-col relative h-screen text-sm overflow-hidden md:border-x border-[#1a1a1a]">
       
       {/* Header */}
-      <div className="flex justify-between items-center px-4 pt-4 pb-3 bg-[#1e1e26] shadow-sm z-10 relative border-b border-black">
+      <div className="flex justify-between items-center px-4 py-3 bg-[#0c0c0c] z-10 border-b border-[#222]">
         <div className="flex items-center gap-2">
-          <LogoSvg />
-          <h1 className="text-xl font-bold text-white tracking-wide flex items-top gap-1">
-            Crypto Sol <span className="text-[9px] text-[#a1a1aa] font-bold mt-1.5 uppercase">TM</span> <span className="text-[10px] text-[#71717a] font-normal mt-2 ml-1">v5.0</span>
+          <svg width="24" height="24" viewBox="0 0 395 314" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M62.6393 113.882C58.8266 113.882 55.4389 111.458 54.1953 107.828L1.65089 12.3922C-0.817088 5.48545 4.31689 0 11.5835 0H282.684C286.497 0 289.884 2.42416 291.128 6.05389L343.672 101.49C346.14 108.396 341.006 113.882 333.74 113.882H62.6393Z" fill="url(#sol-gradient)"/>
+            <path d="M62.6393 313.35H332.969C340.235 313.35 345.369 307.864 342.901 300.958L290.357 205.522C289.113 201.892 285.725 199.468 281.913 199.468H12.355C5.0883 199.468 -0.0456637 204.954 2.42231 211.861L54.1953 306.525C55.4389 310.154 58.8266 313.35 62.6393 313.35Z" fill="url(#sol-gradient)"/>
+            <defs>
+              <linearGradient id="sol-gradient" x1="12.355" y1="156.675" x2="332.969" y2="156.675" gradientUnits="userSpaceOnUse">
+                <stop stopColor="#00FFA3"/>
+                <stop offset="1" stopColor="#DC1FFF"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <h1 className="text-lg font-bold text-transparent bg-clip-text bg-gradient-to-r from-[#00FFA3] to-[#DC1FFF] tracking-wide flex items-top gap-1">
+            Solana Scanner
           </h1>
         </div>
-        <div className="flex items-center gap-4">
-          <button 
-            onClick={exportWallets}
-            disabled={found.length === 0}
-            className="text-[#6366f1] hover:text-[#818cf8] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Export Found Wallets"
-          >
-            <Download className="w-5 h-5" />
-          </button>
-          
-          <div 
-            className="flex items-center gap-1.5"
-            title={isScanning ? "Real Mode: Scanning live blockchain" : "Real Mode: Inactive"}
-          >
-            <span className={`text-[10px] font-bold tracking-wider transition-colors ${isScanning ? 'text-green-500' : 'text-gray-500'}`}>
-              REAL
-            </span>
-            <div className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${isScanning ? 'bg-[#22c55e] shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-gray-600'}`}></div>
-          </div>
-          <Key className="text-[#f59e0b] w-5 h-5 fill-[#f59e0b]/50" />
-          <Send className="text-[#3b82f6] w-5 h-5 fill-[#3b82f6]" />
-          <div className="bg-[#115e59] p-1.5 rounded-sm flex items-center justify-center">
-            <Shield className="text-[#f97316] w-4 h-4 fill-[#f97316]" />
-          </div>
-        </div>
-      </div>
-
-      {/* Network Grid */}
-      <div className="grid grid-cols-6 gap-y-3 gap-x-2 px-3 py-3 bg-[#111113] relative z-0 border-b border-[#1e1e26] shadow-inner shrink-0">
-        
-        {cryptoNetworks.map(net => {
-          const isSelected = selectedNetworks.has(net.id);
-          return (
-            <div 
-              key={net.id} 
-              onClick={() => toggleNetwork(net.id)}
-              className={`flex flex-col items-center justify-start relative p-1 rounded-md transition-all cursor-pointer active:scale-95 ${isSelected ? 'bg-white/5 border border-[#38bdf8]/40 shadow-sm' : 'hover:bg-white/5 border border-transparent hover:border-white/10'}`}>
-              <div className="relative mb-1 flex items-center justify-center w-[26px] h-[26px] mt-1">
-                {/* Outer faint background element to mimic solid base shape */}
-                <div className="absolute inset-0 bg-[#2b2b36] opacity-60 rounded-lg transform rotate-45 scale-90"></div>
-                
-                <img src={net.iconUrl} alt={net.name} className={`w-5 h-5 relative z-10 transition-all ${isSelected ? 'drop-shadow-md opacity-100 scale-110' : 'opacity-40 grayscale scale-100'}`} referrerPolicy="no-referrer" />
-                
-                {/* Status Circle indicator */}
-                <div className={`absolute -bottom-1 -right-1 w-[12px] h-[12px] rounded-full border border-[#1e1e26] flex items-center justify-center z-20 transition-all duration-200
-                  ${isSelected ? 'bg-[#38bdf8] scale-100' : 'bg-transparent border-gray-600 scale-75 opacity-50'}`}>
-                  {isSelected && <Check size={8} className="text-[#1a1921]" strokeWidth={4} />}
-                </div>
-              </div>
-              <span className={`text-[8.5px] tracking-tighter font-bold text-center leading-tight mt-1 transition-colors ${isSelected ? 'text-white' : 'text-gray-500'}`}>{net.name}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* RPC Status Panel */}
-      <div className="bg-[#18181b] px-4 py-2 border-b border-[#1e1e26] flex items-center justify-between overflow-x-auto no-scrollbar gap-4 shadow-sm">
-        <div className="flex items-center gap-2 shrink-0">
-          <div className={`w-2 h-2 rounded-full ${rpcStatus ? 'bg-green-500 animate-pulse' : 'bg-gray-600'}`}></div>
-          <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">Network Node Status:</span>
-        </div>
         <div className="flex items-center gap-3">
-          {rpcStatus && Object.entries(rpcStatus).map(([chain, info]: [any, any]) => (
-            <div key={chain} className="flex items-center gap-1 shrink-0">
-              <div className={`w-1.5 h-1.5 rounded-full ${info.status === 'connected' ? 'bg-green-400' : 'bg-red-500'}`}></div>
-              <span className="text-[9px] font-mono text-gray-500 uppercase">{chain}</span>
-            </div>
-          ))}
-          {!rpcStatus && <span className="text-[9px] text-gray-600 animate-pulse">CONNECTING TO NODES...</span>}
+          <div className="flex items-center gap-1.5 bg-black/40 px-2 py-1 rounded-full border border-white/5 shadow-inner">
+            <span className={`text-[9px] font-bold tracking-wider ${isScanning ? 'text-[#00FFA3]' : 'text-gray-500'}`}>
+              {isScanning ? 'ACTIVE' : 'IDLE'}
+            </span>
+            <div className={`w-2 h-2 rounded-full transition-all duration-300 ${isScanning ? 'bg-[#00FFA3] shadow-[0_0_8px_rgba(0,255,163,0.8)] animate-pulse' : 'bg-gray-700'}`}></div>
+          </div>
         </div>
       </div>
 
-      {/* Live Check Log */}
+      {/* RPC Configuration */}
+      <div className="bg-[#111111] p-3 border-b border-[#222]">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-[11px] uppercase tracking-wider text-gray-400 font-bold flex items-center gap-1.5 text-transparent bg-clip-text bg-gradient-to-r from-gray-400 to-gray-500">
+            <Database size={12} className="text-[#DC1FFF]" />
+            RPC Nodes ({rpcs.length})
+          </h3>
+        </div>
+        
+        <div className="flex flex-col gap-2 mb-3">
+          <div className="flex gap-2">
+            <input 
+              type="text" 
+              value={newRpc}
+              onChange={(e) => setNewRpc(e.target.value)}
+              placeholder="HTTPS RPC URL..."
+              className="flex-1 min-w-0 bg-black border border-[#333] text-[12px] h-11 rounded px-3 focus:outline-none focus:border-[#DC1FFF] transition-colors text-white placeholder-gray-600 font-mono"
+              disabled={isScanning || isAddingRpc}
+            />
+            <button 
+              onClick={addRpc}
+              disabled={!newRpc || isScanning || isAddingRpc}
+              className="bg-[#222] hover:bg-[#333] border border-[#333] px-5 h-11 rounded transition-colors text-white disabled:opacity-50 text-[11px] font-bold tracking-wider flex items-center justify-center gap-1.5 shrink-0 min-w-[110px]"
+            >
+              {isAddingRpc ? <span className="animate-pulse">CONNECTING...</span> : <><Plus size={14} /> CONNECT</>}
+            </button>
+          </div>
+          
+          <div className="mt-2 flex flex-col gap-1">
+            <label className="text-[10px] text-gray-500 font-bold tracking-widest flex justify-between">
+              <span>SCAN INTENSITY (LOAD)</span>
+              <span className="text-[#DC1FFF]">{scanIntensity} req/sec per node</span>
+            </label>
+            <input 
+              type="range" 
+              min="1" 
+              max="50" 
+              value={scanIntensity} 
+              onChange={(e) => setScanIntensity(Number(e.target.value))} 
+              disabled={isScanning}
+              className="w-full h-1 bg-[#333] rounded-lg appearance-none cursor-pointer accent-[#DC1FFF]"
+            />
+          </div>
+        </div>
+
+        <div className="h-[100px] overflow-y-auto no-scrollbar space-y-2">
+          {rpcs.map((rpc, i) => {
+            const statusInfo = rpcStatus[rpc];
+            return (
+            <div key={i} className="flex items-center justify-between bg-black/50 border border-[#222] px-3 py-2 rounded-lg group hover:border-[#333] transition-colors">
+              <div className="flex items-center gap-2.5 overflow-hidden flex-1 mr-3">
+                <div title={statusInfo?.status || 'Unknown'} className={`shrink-0 w-2.5 h-2.5 rounded-full ${
+                  statusInfo?.status === 'connected' ? `bg-[#00FFA3] shadow-[0_0_5px_rgba(0,255,163,0.5)] ${isScanning ? 'animate-pulse' : ''}` : 
+                  statusInfo?.status === 'checking' ? 'bg-yellow-500 animate-pulse' : 
+                  statusInfo?.status === 'error' ? 'bg-red-500 shadow-[0_0_5px_rgba(239,68,68,0.5)]' : 'bg-gray-600'
+                }`}></div>
+                <span className="text-[11px] font-mono text-gray-300 truncate min-w-0">{rpc}</span>
+                {statusInfo?.latency && <span className="text-[10px] text-gray-500 shrink-0 ml-auto">{statusInfo.latency}ms</span>}
+              </div>
+              <button 
+                onClick={() => removeRpc(rpc)} 
+                disabled={isScanning || rpcs.length <= 1}
+                className="text-gray-500 hover:text-red-400 disabled:opacity-30 transition-colors bg-[#111] hover:bg-[#222] border border-[#222] p-2 rounded cursor-pointer shrink-0 z-10"
+                title={rpcs.length <= 1 ? "Cannot remove last RPC" : "Remove RPC"}
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Tab Switcher */}
+      <div className="flex border-b border-[#222]">
+         <button 
+           onClick={() => setActiveTab('scanner')} 
+           className={`flex-1 py-2 text-[10px] uppercase tracking-widest font-bold transition-all ${activeTab === 'scanner' ? 'bg-[#111] text-[#00FFA3] border-b-2 border-[#00FFA3]' : 'bg-[#050505] text-gray-600 hover:text-gray-400 hover:bg-[#0a0a0a]'}`}
+         >
+            Generations
+         </button>
+         <button 
+           onClick={() => setActiveTab('network')} 
+           className={`flex-1 py-2 text-[10px] uppercase tracking-widest font-bold transition-all ${activeTab === 'network' ? 'bg-[#111] text-[#DC1FFF] border-b-2 border-[#DC1FFF]' : 'bg-[#050505] text-gray-600 hover:text-gray-400 hover:bg-[#0a0a0a]'}`}
+         >
+            Network Traffic
+         </button>
+      </div>
+
       <div 
         ref={logContainerRef}
-        className="flex-1 overflow-y-auto bg-black p-0 relative shadow-inner [mask-image:linear-gradient(to_bottom,transparent,black_10%,black_90%,transparent)]"
+        className="flex-1 overflow-y-auto bg-[#050505] relative shadow-inner [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
       >
-        <div className="flex flex-col justify-end pt-8 pb-8">
-          {recentSeeds.length === 0 ? (
-            <div className="text-center text-[#52525b] mt-10 text-[11px] tracking-wider uppercase font-mono">Awaiting scan initiation...</div>
-          ) : (
-            recentSeeds.map((item) => (
-              <div key={item.uid} className="animate-fade-in-down flex items-start text-[11px] px-3 py-1.5 leading-tight hover:bg-[#1a1a21] border-b border-[#111116] transition-all">
-                <ListCheckIcon />
-                <div className="ml-2 flex-1 min-w-0 flex items-center">
-                   <span className="text-[#8b5cf6] font-semibold mr-2 shrink-0 whitespace-nowrap text-[10px] uppercase tracking-wider">CHECK:</span>
-                   <span className="text-[#a1a1aa] font-mono text-[9.5px] whitespace-normal leading-tight break-words opacity-80">{item.seed}</span>
-                </div>
+        {activeTab === 'scanner' ? (
+          <div className="flex flex-col justify-end pt-4 pb-2">
+            {recentSeeds.length === 0 ? (
+              <div className="text-center text-[#444] mt-10 text-[11px] tracking-wider uppercase font-mono">
+                Ready to initialize derivation paths
               </div>
-            ))
-          )}
+            ) : (
+              recentSeeds.map((item) => (
+                <div key={item.uid} className="animate-fade-in-down flex items-start text-[11px] px-3 py-[3px] border-b border-[#111] hover:bg-[#0a0a0a] transition-all">
+                  <Search size={10} className="mt-1 text-[#DC1FFF]/40 shrink-0" />
+                  <div className="ml-2 flex-1 min-w-0 flex items-center">
+                     <span className="text-gray-500 font-mono text-[9.5px] whitespace-normal break-words opacity-70 selection:bg-[#DC1FFF]/30">{item.seed}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-col justify-end pt-4 pb-2">
+            {networkLogs.length === 0 ? (
+              <div className="text-center text-[#444] mt-10 text-[11px] tracking-wider uppercase font-mono">
+                Awaiting network requests...
+              </div>
+            ) : (
+              networkLogs.map((log) => (
+                <div key={log.uid} className="animate-fade-in-down flex items-start text-[10px] px-3 py-1 hover:bg-[#0a0a0a] transition-all border-b border-[#111]/50">
+                  <span className="text-gray-600 text-[9px] w-14 shrink-0 font-mono truncate mr-2" title={new Date(log.time).toISOString().substring(14, 23)}>
+                    {new Date(log.time).toISOString().substring(14, 23)}
+                  </span>
+                  <span className={`font-mono flex-1 whitespace-pre-wrap break-all ${log.msg.includes('[RES]') ? 'text-[#00FFA3]' : log.msg.includes('[ERR]') ? 'text-red-400' : 'text-gray-400 opacity-80'}`}>
+                    {log.msg}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Stats Line */}
+      <div className="bg-[#111] py-2 px-3 flex items-center justify-between text-[11px] text-[#a1a1aa] border-y border-[#222] font-mono shadow-md z-10">
+        <div className="flex items-center gap-1.5">
+          <Activity size={12} className="text-[#00FFA3]" />
+          <span className="text-white font-bold">{scanSpeed.toLocaleString()}</span>
+          <span className="text-gray-500">W/s</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Key size={12} className="text-[#DC1FFF]" />
+          <span className="text-white font-bold">{checked.toLocaleString()}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[#00FFA3] block w-2 h-2 rounded-full border border-[#00FFA3]"></span>
+          <span className="text-white font-bold">${totalValue.toFixed(2)}</span>
         </div>
       </div>
 
       {/* Control Panel */}
-      <div className="bg-[#2b2b36] p-3 flex items-center gap-3 border-b border-[#14141a] border-t border-[#14141a]">
-        <button className="w-12 h-10 rounded shadow-sm bg-[#3f3f46] flex items-center justify-center border border-[#a855f7]/30 relative overflow-hidden group hover:brightness-110 active:scale-95 transition-all">
-           <Search size={20} className="text-[#a855f7]" />
-           <div className="absolute bottom-1 right-1 w-3.5 h-3.5 rounded-full bg-[#f59e0b] border border-[#d97706] flex items-center justify-center">
-             <span className="text-[8px] font-bold text-black">B</span>
-           </div>
-        </button>
-        
+      <div className="bg-[#050505] p-3 flex items-center gap-3">
         {isScanning ? (
           <button 
             onClick={stopScanning}
-            className="flex-[1.5] h-10 bg-[#dc2626] text-white font-bold rounded shadow-md text-sm tracking-widest border border-[#b91c1c] shadow-red-900/20 active:scale-95 transition-all"
+            className="flex-1 h-12 bg-[#220000] text-red-500 font-bold rounded flex items-center justify-center gap-2 shadow-lg text-sm tracking-widest border border-red-900 shadow-[0_0_15px_rgba(220,38,38,0.15)] hover:bg-[#330000] active:scale-95 transition-all outline-none"
           >
-            STOP
+            <Square size={16} fill="currentColor" /> STOP
           </button>
         ) : (
           <button 
             onClick={startScanning}
-            disabled={!rpcStatus || selectedNetworks.size === 0}
-            className={`flex-[1.5] h-10 font-bold rounded shadow-md text-sm tracking-widest border transition-all ${
-              (!rpcStatus || selectedNetworks.size === 0) ? 'bg-gray-700 text-gray-500 border-gray-600 cursor-not-allowed' : 'bg-[#dc2626] text-white border-[#b91c1c] shadow-red-900/20 active:scale-95'
+            disabled={rpcs.length === 0}
+            className={`flex-1 h-12 font-bold rounded flex items-center justify-center gap-2 shadow-lg text-sm tracking-widest border transition-all ${
+              rpcs.length === 0 ? 'bg-[#111] text-gray-500 border-[#222] cursor-not-allowed' : 'bg-gradient-to-r from-[#00FFA3]/10 to-[#DC1FFF]/10 text-white border-[#DC1FFF]/50 hover:border-[#00FFA3] hover:shadow-[0_0_15px_rgba(0,255,163,0.3)] active:scale-95 outline-none'
             }`}
           >
-            {!rpcStatus ? 'CONNECTING...' : (selectedNetworks.size === 0 ? 'SELECT NET' : 'START')}
+            <Play size={16} fill="currentColor" /> START
           </button>
         )}
 
-        <div className="flex-1 h-10 bg-[#3f3f46] rounded flex items-center justify-center font-mono text-[15px] text-[#e4e4e7] font-semibold border border-[#27272a] shadow-inner tracking-widest">
+        <div className="w-24 h-12 bg-black rounded flex items-center justify-center font-mono text-[14px] text-[#00FFA3] border border-[#222] shadow-inner tracking-widest font-bold">
           {formatTime(timeElapsed)}
         </div>
       </div>
 
-      {/* Stats Line */}
-      <div className="bg-[#18181b] py-2 px-4 flex items-center justify-between text-[11px] text-[#a1a1aa] border-b border-black font-mono">
-        <div className="flex items-center gap-2">
-          <span className="text-[#38bdf8] font-bold">SPEED:</span>
-          <span className="text-white">{scanSpeed.toLocaleString()} S/s</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-gray-500 uppercase">Total Checked:</span>
-          <span className="text-white font-bold">{formatNumber(checked)}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[#eab308] font-bold">VAL:</span>
-          <span className="text-green-400 font-bold">${totalValue.toFixed(2)}</span>
-        </div>
-      </div>
-
       {/* Found Area Output */}
-      <div ref={foundContainerRef} className="bg-[#141418] p-4 h-[185px] overflow-y-auto w-full border-t border-[#1a1a24] scroll-smooth shadow-inner shrink-0">
-        <div className="flex items-center justify-between mb-3 border-b border-[#2b2b36] pb-2">
-          <h2 className="text-[12px] font-bold text-[#22c55e] uppercase tracking-widest flex items-center gap-2">
-            <Shield size={14} className="text-[#22c55e]" />
-            Recovery Success Log
+      <div ref={foundContainerRef} className="bg-[#111] p-0 h-[220px] overflow-y-auto w-full border-t border-[#222] scroll-smooth shadow-inner shrink-0 relative">
+        <div className="sticky top-0 bg-[#111]/90 backdrop-blur-sm z-10 flex items-center justify-between p-3 border-b border-[#222]">
+          <h2 className="text-[12px] font-bold text-white uppercase tracking-widest flex items-center gap-2">
+            <CheckCircle2 size={14} className="text-[#00FFA3]" />
+            Found Assets
           </h2>
-          <div className="flex items-center gap-3">
-             <button 
-              onClick={() => {
-                 const text = found.map(w => `Timestamp: ${new Date(w.timestamp).toLocaleString()}\nSeed: ${w.seed}\nTotal Value: $${w.totalValue.toFixed(2)}\nBalances: ${Object.entries(w.balances).map(([k, v]: [string, any]) => `${k}: ${v.amount}`).join(', ')}\n------------------`).join('\n\n');
-                 const blob = new Blob([text], { type: 'text/plain' });
-                 const url = URL.createObjectURL(blob);
-                 const a = document.createElement('a');
-                 a.href = url;
-                 a.download = `recovery_log_${Date.now()}.txt`;
-                 a.click();
-              }}
-              disabled={found.length === 0}
-              className="text-[9px] bg-[#22c55e]/10 hover:bg-[#22c55e]/20 text-[#22c55e] border border-[#22c55e]/30 px-2 py-0.5 rounded cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              EXPORT LOG
-            </button>
-            <span className="text-[10px] text-gray-500 font-mono">COUNT: {found.length}</span>
-          </div>
+          <span className="bg-[#00FFA3]/10 text-[#00FFA3] px-2 py-0.5 rounded text-[10px] font-bold border border-[#00FFA3]/20">
+            {found.length}
+          </span>
         </div>
 
         {found.length === 0 ? (
-           <p className="text-[#52525b] italic text-[11px] tracking-wide mt-1 text-center">Awaiting high-value wallet discovery...</p>
+           <div className="flex flex-col items-center justify-center h-32 opacity-30 mt-4 text-[#00FFA3]">
+             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="mb-2">
+               <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+               <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+               <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
+             </svg>
+             <p className="text-[10px] uppercase tracking-widest">No matching keys</p>
+           </div>
         ) : (
-          <div className="space-y-4 pb-4">
+          <div className="space-y-3 p-3">
             {found.map((item, i) => {
-              const nonZeroBalances = Object.entries<any>(item.balances || {})
-                .filter(([_, val]) => val.amount > 0.000001)
-                .map(([name, val]) => ({ name: name.toUpperCase(), ...val }))
-                .sort((a, b) => b.value - a.value);
-                
               const dateObj = new Date(item.timestamp);
               const timeString = isNaN(dateObj.getTime()) ? new Date().toLocaleTimeString() : dateObj.toLocaleTimeString();
 
               return (
-                 <div key={`found-${i}`} className="text-[12px] leading-relaxed p-3 bg-gradient-to-br from-[#1e1e26] to-[#14141a] rounded-lg border border-[#38bdf8]/20 shadow-lg relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-1 bg-[#38bdf8]/10 text-[#38bdf8] text-[9px] font-mono rounded-bl">
-                      {timeString}
+                 <div key={`found-${i}`} className="text-[12px] p-3 bg-[#0a0a0a] rounded border border-[#333] relative group hover:border-[#DC1FFF]/50 transition-colors">
+                    
+                    <button 
+                      onClick={() => removeWallet(i)}
+                      className="absolute top-2 right-2 p-1.5 text-gray-600 hover:text-red-400 bg-[#111] hover:bg-[#222] rounded opacity-0 group-hover:opacity-100 transition-all border border-[#222] z-20"
+                      title="Remove Wallet"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+
+                    <div className="flex justify-between items-center mb-2">
+                       <span className="bg-[#DC1FFF]/10 text-[#DC1FFF] px-1.5 py-0.5 rounded text-[9px] font-mono border border-[#DC1FFF]/20">
+                         {timeString}
+                       </span>
+                       <span className="text-[#00FFA3] font-bold text-[12px] mr-6">
+                         +${item.totalValue.toFixed(2)}
+                       </span>
                     </div>
 
                     <div className="mb-2">
-                      <span className="text-gray-500 text-[10px] uppercase font-bold tracking-tighter block mb-1">Seed Phrase Detected:</span>
-                      <p className="text-white font-medium bg-black/40 p-2 rounded border border-white/5 font-mono select-all break-words leading-tight">
+                      <p className="text-gray-300 font-mono text-[10px] bg-black p-2 rounded border border-[#222] select-all break-words leading-relaxed selection:bg-[#DC1FFF]/30 group-hover:border-[#333] transition-colors relative">
                         {item.seed}
+                        <button 
+                          onClick={() => navigator.clipboard.writeText(item.seed)}
+                          className="absolute bottom-1 right-1 p-1 text-gray-500 hover:text-white bg-black/50 rounded"
+                          title="Copy Seed Phase"
+                        >
+                          <Copy size={10} />
+                        </button>
                       </p>
                     </div>
                     
-                    <div className="mb-2">
-                      <span className="text-gray-500 text-[10px] uppercase font-bold tracking-tighter block mb-1">Network Assets Found:</span>
-                      <div className="grid grid-cols-2 gap-2">
-                        {nonZeroBalances.map((b, idx) => (
-                          <div key={idx} className="bg-black/30 px-2 py-1.5 rounded flex items-center justify-between border border-white/5">
-                            <span className="text-[#38bdf8] font-bold text-[10px]">{b.name}</span>
-                            <div className="text-right">
-                              <div className="text-white font-bold text-[11px] leading-none">{b.amount.toFixed(6)}</div>
-                              <div className="text-green-400 text-[9px] font-mono leading-none mt-1">+${b.value.toFixed(2)}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    {item.addresses && (
-                      <div className="mt-2 pt-2 border-t border-white/5">
-                        <span className="text-gray-500 text-[9px] uppercase font-bold block mb-1">Public Addresses:</span>
-                        <div className="grid grid-cols-1 gap-1">
-                          {Object.entries<string>(item.addresses)
-                            .filter(([_, addr]) => addr)
-                            .slice(0, 3) // Show first 3 addresses to keep it clean
-                            .map(([net, addr], idx) => (
-                              <div key={idx} className="flex justify-between items-center text-[9px] font-mono bg-black/20 px-1.5 py-0.5 rounded">
-                                <span className="text-gray-400 uppercase">{net}:</span>
-                                <span className="text-gray-500 truncate ml-2 max-w-[180px]">{addr}</span>
-                              </div>
-                            ))
-                          }
-                        </div>
+                    {item.addresses && Object.keys(item.addresses).length > 0 && (
+                      <div className="flex items-center justify-between text-[10px] font-mono bg-black px-2 py-1.5 rounded border border-[#222] group-hover:border-[#333] transition-colors">
+                        <span className="text-gray-500 uppercase flex items-center gap-1">
+                           <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=025" alt="SOL" className="w-3 h-3 grayscale" />
+                           {item.balances?.sol?.amount?.toFixed(4) || "0.0000"} SOL
+                        </span>
+                        <span className="text-gray-400 truncate w-32 text-right selection:bg-[#00FFA3]/30" title={item.addresses.solana}>{item.addresses.solana}</span>
                       </div>
                     )}
-
-                    <div className="mt-3 flex justify-between items-end">
-                       <div className="bg-[#22c55e]/10 text-[#22c55e] px-2 py-1 rounded-full text-[10px] font-bold border border-[#22c55e]/20">
-                         TOTAL VALUE: ${item.totalValue.toFixed(2)}
-                       </div>
-                    </div>
                  </div>
               )
             })}
@@ -552,3 +619,4 @@ export default function App() {
     </div>
   );
 }
+
