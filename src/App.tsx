@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { Play, Square, Activity, Database, Trash2, Plus, Download, Key, Search, Copy, CheckCircle2 } from 'lucide-react';
+import { Play, Square, Activity, Database, Trash2, Plus, Download, Key, Search, Copy, CheckCircle2, Wifi, ChevronDown, ChevronUp } from 'lucide-react';
 import { Storage } from './lib/storage';
 
 const DEFAULT_RPCS = [
@@ -26,7 +26,7 @@ export default function App() {
   const [rpcStatus, setRpcStatus] = useState<Record<string, { status: 'checking' | 'connected' | 'error', latency?: number }>>({});
   const [isAddingRpc, setIsAddingRpc] = useState(false);
   const [scanIntensity, setScanIntensity] = useState(10); // Default to 10 requests per connected node
-  const [activeTab, setActiveTab] = useState<'scanner' | 'network'>('scanner');
+  const [activePage, setActivePage] = useState<'scanner' | 'network' | 'recoveries'>('scanner');
   const [networkLogs, setNetworkLogs] = useState<{uid: string, msg: string, time: number}[]>([]);
   const logQueueRef = useRef<{msg: string}[]>([]);
   const wakeLockRef = useRef<any>(null);
@@ -152,6 +152,7 @@ export default function App() {
   const startTimeRef = useRef<number | null>(null);
   const initialTimeOffset = useRef(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const [isNodeFullView, setIsNodeFullView] = useState(false);
   const foundContainerRef = useRef<HTMLDivElement>(null);
 
   const totalCheckedRef = useRef(0);
@@ -166,7 +167,9 @@ export default function App() {
 
   // Initialize Workers
   useEffect(() => {
-    const numWorkers = Math.max(6, (navigator.hardwareConcurrency || 4));
+    // Leave at least 1 core for the main thread (React UI), max 8 workers
+    const hwCores = navigator.hardwareConcurrency || 4;
+    const numWorkers = Math.max(1, Math.min(8, hwCores - 1));
     const newWorkers: Worker[] = [];
 
     for (let i = 0; i < numWorkers; i++) {
@@ -314,8 +317,8 @@ export default function App() {
     
     // Determine safe load based on user selection, but clamp true concurrency to prevent socket exhaustion
     let safeTotalConcurrency = Math.max(1, activeRpcs.length * scanIntensity);
-    if (safeTotalConcurrency > 150) {
-        safeTotalConcurrency = 150; // Max out at 150 concurrent sockets to prevent mobile browser crash
+    if (safeTotalConcurrency > 2400) {
+        safeTotalConcurrency = 2400; // Allow much higher concurrency before capping
     }
     const workersCount = workersRef.current.length || 1;
     // Distribute the concurrency load across all active workers
@@ -412,298 +415,311 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] text-gray-300 font-sans mx-auto w-full md:max-w-md flex flex-col relative h-screen text-sm overflow-hidden md:border-x border-[#1a1a1a]">
+    <div className="h-[100dvh] w-full bg-[#050505] text-gray-300 font-sans flex flex-col overflow-hidden">
       
-      {/* Header */}
-      <div className="flex justify-between items-center px-4 py-3 bg-[#0c0c0c] z-10 border-b border-[#222]">
-        <div className="flex items-center gap-2">
-          <svg width="24" height="24" viewBox="0 0 395 314" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M62.6393 113.882C58.8266 113.882 55.4389 111.458 54.1953 107.828L1.65089 12.3922C-0.817088 5.48545 4.31689 0 11.5835 0H282.684C286.497 0 289.884 2.42416 291.128 6.05389L343.672 101.49C346.14 108.396 341.006 113.882 333.74 113.882H62.6393Z" fill="url(#sol-gradient)"/>
-            <path d="M62.6393 313.35H332.969C340.235 313.35 345.369 307.864 342.901 300.958L290.357 205.522C289.113 201.892 285.725 199.468 281.913 199.468H12.355C5.0883 199.468 -0.0456637 204.954 2.42231 211.861L54.1953 306.525C55.4389 310.154 58.8266 313.35 62.6393 313.35Z" fill="url(#sol-gradient)"/>
-            <defs>
-              <linearGradient id="sol-gradient" x1="12.355" y1="156.675" x2="332.969" y2="156.675" gradientUnits="userSpaceOnUse">
-                <stop stopColor="#00FFA3"/>
-                <stop offset="1" stopColor="#DC1FFF"/>
-              </linearGradient>
-            </defs>
-          </svg>
-          <h1 className="text-lg font-bold text-transparent bg-clip-text bg-gradient-to-r from-[#00FFA3] to-[#DC1FFF] tracking-wide flex items-top gap-1">
-            Solana Scanner
+      {/* Top Header */}
+      <header className="h-[60px] md:h-[70px] shrink-0 bg-[#020202] border-b border-[#222] flex items-center justify-between pl-3 md:pl-6 relative z-10 shadow-md">
+        <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-[#00FFA3] to-transparent opacity-20"></div>
+        
+        {/* Left: Logo */}
+        <div className="flex items-center gap-2 md:gap-4 flex-1">
+          <div className="relative flex items-center justify-center p-1.5 md:p-2 bg-[#111] rounded-lg border border-[#333]">
+             <Activity className="text-[#00FFA3] w-4 h-4 md:w-5 md:h-5" />
+             {isScanning && <div className="absolute -top-1 -right-1 w-2 h-2 bg-[#00FFA3] rounded-full animate-ping"></div>}
+          </div>
+          <h1 className="text-[14px] md:text-[20px] font-black text-transparent bg-clip-text bg-gradient-to-r from-[#14F195] to-[#9945FF] tracking-widest uppercase truncate hidden sm:block">
+            SolScanner
           </h1>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-black/40 px-2 py-1 rounded-full border border-white/5 shadow-inner">
-            <span className={`text-[9px] font-bold tracking-wider ${isScanning ? 'text-[#00FFA3]' : 'text-gray-500'}`}>
-              {isScanning ? 'ACTIVE' : 'IDLE'}
-            </span>
-            <div className={`w-2 h-2 rounded-full transition-all duration-300 ${isScanning ? 'bg-[#00FFA3] shadow-[0_0_8px_rgba(0,255,163,0.8)] animate-pulse' : 'bg-gray-700'}`}></div>
-          </div>
-        </div>
-      </div>
-
-      {/* RPC Configuration */}
-      <div className="bg-[#111111] p-3 border-b border-[#222]">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[11px] uppercase tracking-wider text-gray-400 font-bold flex items-center gap-1.5 text-transparent bg-clip-text bg-gradient-to-r from-gray-400 to-gray-500">
-            <Database size={12} className="text-[#DC1FFF]" />
-            RPC Nodes ({rpcs.length})
-          </h3>
-        </div>
         
-        <div className="flex flex-col gap-2 mb-3">
-          <div className="flex gap-2">
-            <input 
-              type="text" 
-              value={newRpc}
-              onChange={(e) => setNewRpc(e.target.value)}
-              placeholder="HTTPS RPC URL..."
-              className="flex-1 min-w-0 bg-black border border-[#333] text-[12px] h-11 rounded px-3 focus:outline-none focus:border-[#DC1FFF] transition-colors text-white placeholder-gray-600 font-mono"
-              disabled={isScanning || isAddingRpc}
-            />
-            <button 
-              onClick={addRpc}
-              disabled={!newRpc || isScanning || isAddingRpc}
-              className="bg-[#222] hover:bg-[#333] border border-[#333] px-5 h-11 rounded transition-colors text-white disabled:opacity-50 text-[11px] font-bold tracking-wider flex items-center justify-center gap-1.5 shrink-0 min-w-[110px]"
-            >
-              {isAddingRpc ? <span className="animate-pulse">CONNECTING...</span> : <><Plus size={14} /> CONNECT</>}
+        {/* Center: Navigation Tabs */}
+        <div className="flex items-center justify-center">
+          <div className="flex items-center gap-1 md:gap-2 bg-[#0A0A0A] p-1 rounded-lg border border-[#222]">
+            <button onClick={() => setActivePage('scanner')} className={`px-3 py-1.5 md:px-4 md:py-2 rounded-md text-[10px] md:text-sm font-bold uppercase tracking-wider transition-all flex items-center gap-1 md:gap-2 ${activePage === 'scanner' ? 'bg-[#111] text-[#14F195] shadow-sm border border-[#333]' : 'text-[#666] hover:text-[#aaa] border border-transparent'}`}>
+              <Activity size={14} className="hidden sm:block" /> Scanner
+            </button>
+            <button onClick={() => setActivePage('network')} className={`px-3 py-1.5 md:px-4 md:py-2 rounded-md text-[10px] md:text-sm font-bold uppercase tracking-wider transition-all flex items-center gap-1 md:gap-2 ${activePage === 'network' ? 'bg-[#111] text-white shadow-sm border border-[#333]' : 'text-[#666] hover:text-[#aaa] border border-transparent'}`}>
+              <Wifi size={14} className="hidden sm:block" /> Network
             </button>
           </div>
-          
-          <div className="mt-2 flex flex-col gap-1">
-            <label className="text-[10px] text-gray-500 font-bold tracking-widest flex justify-between">
-              <span>SCAN INTENSITY (LOAD)</span>
-              <span className="text-[#DC1FFF]">{scanIntensity} req/sec per node</span>
-            </label>
-            <input 
-              type="range" 
-              min="1" 
-              max="200" 
-              value={scanIntensity} 
-              onChange={(e) => setScanIntensity(Number(e.target.value))} 
-              disabled={isScanning}
-              className="w-full h-1 bg-[#333] rounded-lg appearance-none cursor-pointer accent-[#DC1FFF]"
-            />
-          </div>
         </div>
 
-        <div className="h-[100px] overflow-y-auto no-scrollbar space-y-2">
-          {rpcs.map((rpc, i) => {
-            const statusInfo = rpcStatus[rpc];
-            return (
-            <div key={i} className="flex items-center justify-between bg-black/50 border border-[#222] px-3 py-2 rounded-lg group hover:border-[#333] transition-colors">
-              <div className="flex items-center gap-2.5 overflow-hidden flex-1 mr-3">
-                <div title={statusInfo?.status || 'Unknown'} className={`shrink-0 w-2.5 h-2.5 rounded-full ${
-                  statusInfo?.status === 'connected' ? `bg-[#00FFA3] shadow-[0_0_5px_rgba(0,255,163,0.5)] ${isScanning ? 'animate-pulse' : ''}` : 
-                  statusInfo?.status === 'checking' ? 'bg-yellow-500 animate-pulse' : 
-                  statusInfo?.status === 'error' ? 'bg-red-500 shadow-[0_0_5px_rgba(239,68,68,0.5)]' : 'bg-gray-600'
-                }`}></div>
-                <span className="text-[11px] font-mono text-gray-300 truncate min-w-0">{rpc}</span>
-                {statusInfo?.latency && <span className="text-[10px] text-gray-500 shrink-0 ml-auto">{statusInfo.latency}ms</span>}
-              </div>
-              <button 
-                onClick={() => removeRpc(rpc)} 
-                disabled={isScanning || rpcs.length <= 1}
-                className="text-gray-500 hover:text-red-400 disabled:opacity-30 transition-colors bg-[#111] hover:bg-[#222] border border-[#222] p-2 rounded cursor-pointer shrink-0 z-10"
-                title={rpcs.length <= 1 ? "Cannot remove last RPC" : "Remove RPC"}
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Tab Switcher */}
-      <div className="flex border-b border-[#222]">
-         <button 
-           onClick={() => setActiveTab('scanner')} 
-           className={`flex-1 py-2 text-[10px] uppercase tracking-widest font-bold transition-all ${activeTab === 'scanner' ? 'bg-[#111] text-[#00FFA3] border-b-2 border-[#00FFA3]' : 'bg-[#050505] text-gray-600 hover:text-gray-400 hover:bg-[#0a0a0a]'}`}
-         >
-            Generations
-         </button>
-         <button 
-           onClick={() => setActiveTab('network')} 
-           className={`flex-1 py-2 text-[10px] uppercase tracking-widest font-bold transition-all ${activeTab === 'network' ? 'bg-[#111] text-[#DC1FFF] border-b-2 border-[#DC1FFF]' : 'bg-[#050505] text-gray-600 hover:text-gray-400 hover:bg-[#0a0a0a]'}`}
-         >
-            Network Traffic
-         </button>
-      </div>
-
-      <div 
-        ref={logContainerRef}
-        className="flex-1 overflow-y-auto bg-[#050505] relative shadow-inner [mask-image:linear-gradient(to_bottom,transparent,black_5%,black_95%,transparent)]"
-      >
-        {activeTab === 'scanner' ? (
-          <div className="flex flex-col justify-end pt-4 pb-2">
-            {recentSeeds.length === 0 ? (
-              <div className="text-center text-[#444] mt-10 text-[11px] tracking-wider uppercase font-mono">
-                Ready to initialize derivation paths
-              </div>
-            ) : (
-              recentSeeds.map((item) => (
-                <div key={item.uid} className="animate-fade-in-down flex items-start text-[11px] px-3 py-[3px] border-b border-[#111] hover:bg-[#0a0a0a] transition-all">
-                  <Search size={10} className="mt-1 text-[#DC1FFF]/40 shrink-0" />
-                  <div className="ml-2 flex-1 min-w-0 flex items-center">
-                     <span className="text-gray-500 font-mono text-[9.5px] whitespace-normal break-words opacity-70 selection:bg-[#DC1FFF]/30">{item.seed}</span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        ) : (
-          <div className="flex flex-col justify-end pt-4 pb-2">
-            {networkLogs.length === 0 ? (
-              <div className="text-center text-[#444] mt-10 text-[11px] tracking-wider uppercase font-mono">
-                Awaiting network requests...
-              </div>
-            ) : (
-              networkLogs.map((log) => (
-                <div key={log.uid} className="animate-fade-in-down flex items-start text-[10px] px-3 py-1 hover:bg-[#0a0a0a] transition-all border-b border-[#111]/50">
-                  <span className="text-gray-600 text-[9px] w-14 shrink-0 font-mono truncate mr-2" title={new Date(log.time).toISOString().substring(14, 23)}>
-                    {new Date(log.time).toISOString().substring(14, 23)}
-                  </span>
-                  <span className={`font-mono flex-1 whitespace-pre-wrap break-all ${log.msg.includes('[RES]') ? 'text-[#00FFA3]' : log.msg.includes('[ERR]') ? 'text-red-400' : 'text-gray-400 opacity-80'}`}>
-                    {log.msg}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Stats Line */}
-      <div className="bg-[#111] py-2 px-3 flex items-center justify-between text-[11px] text-[#a1a1aa] border-y border-[#222] font-mono shadow-md z-10">
-        <div className="flex items-center gap-1.5">
-          <Activity size={12} className="text-[#00FFA3]" />
-          <span className="text-white font-bold">{scanSpeed.toLocaleString()}</span>
-          <span className="text-gray-500">W/s</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Key size={12} className="text-[#DC1FFF]" />
-          <span className="text-white font-bold">{checked.toLocaleString()}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[#00FFA3] block w-2 h-2 rounded-full border border-[#00FFA3]"></span>
-          <span className="text-white font-bold">${totalValue.toFixed(2)}</span>
-        </div>
-      </div>
-
-      {/* Control Panel */}
-      <div className="bg-[#050505] p-3 flex items-center gap-3">
-        {isScanning ? (
-          <button 
-            onClick={stopScanning}
-            className="flex-1 h-12 bg-[#220000] text-red-500 font-bold rounded flex items-center justify-center gap-2 shadow-lg text-sm tracking-widest border border-red-900 shadow-[0_0_15px_rgba(220,38,38,0.15)] hover:bg-[#330000] active:scale-95 transition-all outline-none"
-          >
-            <Square size={16} fill="currentColor" /> STOP
-          </button>
-        ) : (
-          <button 
-            onClick={startScanning}
-            disabled={rpcs.length === 0}
-            className={`flex-1 h-12 font-bold rounded flex items-center justify-center gap-2 shadow-lg text-sm tracking-widest border transition-all ${
-              rpcs.length === 0 ? 'bg-[#111] text-gray-500 border-[#222] cursor-not-allowed' : 'bg-gradient-to-r from-[#00FFA3]/10 to-[#DC1FFF]/10 text-white border-[#DC1FFF]/50 hover:border-[#00FFA3] hover:shadow-[0_0_15px_rgba(0,255,163,0.3)] active:scale-95 outline-none'
-            }`}
-          >
-            <Play size={16} fill="currentColor" /> START
-          </button>
-        )}
-
-        <div className="w-24 h-12 bg-black rounded flex items-center justify-center font-mono text-[14px] text-[#00FFA3] border border-[#222] shadow-inner tracking-widest font-bold">
-          {formatTime(timeElapsed)}
-        </div>
-      </div>
-
-      {/* Found Area Output */}
-      <div ref={foundContainerRef} className="bg-[#111] p-0 h-[220px] overflow-y-auto w-full border-t border-[#222] scroll-smooth shadow-inner shrink-0 relative">
-        <div className="sticky top-0 bg-[#111]/90 backdrop-blur-sm z-10 flex items-center justify-between p-3 border-b border-[#222]">
-          <h2 className="text-[12px] font-bold text-white uppercase tracking-widest flex items-center gap-2">
-            <CheckCircle2 size={14} className="text-[#00FFA3]" />
-            Found Assets
-          </h2>
-          <div className="flex items-center gap-2">
-            {found.length > 0 && (
-              <button 
-                onClick={exportFoundWallets}
-                className="bg-[#333] hover:bg-[#444] text-white px-2 py-0.5 rounded flex items-center gap-1 text-[10px] font-bold border border-[#444] transition-colors"
-                title="Save wallets to file (No storage permission needed)"
-              >
-                <Download size={10} /> EXPORT
-              </button>
-            )}
-            <span className="bg-[#00FFA3]/10 text-[#00FFA3] px-2 py-0.5 rounded text-[10px] font-bold border border-[#00FFA3]/20">
-              {found.length}
-            </span>
-          </div>
-        </div>
-
-        {found.length === 0 ? (
-           <div className="flex flex-col items-center justify-center h-32 opacity-30 mt-4 text-[#00FFA3]">
-             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="mb-2">
-               <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
-               <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
-               <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
-             </svg>
-             <p className="text-[10px] uppercase tracking-widest">No matching keys</p>
+        {/* Right: Label */}
+        <div className="flex flex-1 items-center justify-end h-full">
+           <div className="h-full px-4 md:px-8 bg-gradient-to-r from-[#020202] via-[#9945FF]/10 to-[#14F195]/20 border-l border-[#222] flex items-center justify-center gap-3 relative overflow-hidden shadow-[-10px_0_20px_rgba(0,0,0,0.5)]">
+             <div className="absolute top-0 right-0 w-full h-[2px] bg-gradient-to-r from-[#9945FF] to-[#14F195]"></div>
+             <div className="absolute top-0 right-0 w-1/2 h-full bg-[#14F195]/5 origin-top-right -skew-x-[30deg]"></div>
+             
+             <div className="w-2 h-2 md:w-2.5 md:h-2.5 bg-[#14F195] rounded-full animate-pulse shadow-[0_0_12px_#14F195] relative z-10"></div>
+             
+             <div className="flex flex-col relative z-10">
+               <span className="text-[7px] md:text-[8px] text-[#A0A0A0] font-bold tracking-[0.2em] uppercase mb-0.5 whitespace-nowrap">Engine Status</span>
+               <span className="text-[12px] md:text-[15px] font-black uppercase tracking-[0.1em] text-transparent bg-clip-text bg-gradient-to-r from-[#9945FF] to-[#14F195] drop-shadow-[0_0_8px_rgba(20,241,149,0.3)] whitespace-nowrap">
+                 Solana Scanner
+               </span>
+             </div>
            </div>
-        ) : (
-          <div className="space-y-3 p-3">
-            {found.map((item, i) => {
-              const dateObj = new Date(item.timestamp);
-              const timeString = isNaN(dateObj.getTime()) ? new Date().toLocaleTimeString() : dateObj.toLocaleTimeString();
+        </div>
+      </header>
 
-              return (
-                 <div key={`found-${i}`} className="text-[12px] p-3 bg-[#0a0a0a] rounded border border-[#333] relative group hover:border-[#DC1FFF]/50 transition-colors">
-                    
-                    <button 
-                      onClick={() => removeWallet(i)}
-                      className="absolute top-2 right-2 p-1.5 text-gray-600 hover:text-red-400 bg-[#111] hover:bg-[#222] rounded opacity-0 group-hover:opacity-100 transition-all border border-[#222] z-20"
-                      title="Remove Wallet"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-
-                    <div className="flex justify-between items-center mb-2">
-                       <span className="bg-[#DC1FFF]/10 text-[#DC1FFF] px-1.5 py-0.5 rounded text-[9px] font-mono border border-[#DC1FFF]/20">
-                         {timeString}
-                       </span>
-                       <span className="text-[#00FFA3] font-bold text-[12px] mr-6">
-                         +${item.totalValue.toFixed(2)}
-                       </span>
+      {/* Main Content */}
+      <main className="flex-1 overflow-hidden relative w-full">
+      
+        
+        {/* PAGE 1: SCANNER */}
+        {activePage === 'scanner' && (
+          <div className="absolute inset-0 flex flex-col h-full overflow-y-auto md:overflow-hidden p-2 md:p-4 gap-3 md:gap-4 bg-gradient-to-b from-[#0a0a0a] to-[#050505]">
+            
+            {/* 1. SEEDPHRASE SCREEN (Live Buffer) */}
+            <div className="flex-1 shrink-[2] min-h-[300px] md:min-h-[400px] border border-[#222] rounded-xl bg-[#030303] flex flex-col relative overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+              <div className="h-8 md:h-10 border-b border-[#111] bg-[#0A0A0A] flex items-center px-4 justify-between shrink-0">
+                <span className="text-[9px] md:text-[11px] text-[#777] font-bold uppercase tracking-widest flex items-center gap-2">
+                  <Database size={12} className="text-[#00FFA3]" /> Seedphrase Screen
+                </span>
+                <div className="flex items-center gap-2 md:gap-3 text-[9px] md:text-[10px] text-[#555] font-mono">
+                  <span>ACT: {rpcs.filter(r => rpcStatus[r]?.status === 'connected').length}</span>
+                  <span className="text-[#333]">|</span>
+                  <span>Q: {recentSeeds.length}</span>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2 md:p-3" ref={logContainerRef}>
+                <div className="space-y-0.5 font-mono">
+                  {recentSeeds.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-[#333] gap-3">
+                      <Activity size={30} className="opacity-20" />
+                      <div className="text-[10px] md:text-xs uppercase tracking-widest font-bold">Awaiting engine start</div>
                     </div>
-
-                    <div className="mb-2">
-                      <p className="text-gray-300 font-mono text-[10px] bg-black p-2 rounded border border-[#222] select-all break-words leading-relaxed selection:bg-[#DC1FFF]/30 group-hover:border-[#333] transition-colors relative">
-                        {item.seed}
-                        <button 
-                          onClick={() => navigator.clipboard.writeText(item.seed)}
-                          className="absolute bottom-1 right-1 p-1 text-gray-500 hover:text-white bg-black/50 rounded"
-                          title="Copy Seed Phase"
-                        >
-                          <Copy size={10} />
-                        </button>
-                      </p>
-                    </div>
-                    
-                    {item.addresses && Object.keys(item.addresses).length > 0 && (
-                      <div className="flex items-center justify-between text-[10px] font-mono bg-black px-2 py-1.5 rounded border border-[#222] group-hover:border-[#333] transition-colors">
-                        <span className="text-gray-500 uppercase flex items-center gap-1">
-                           <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=025" alt="SOL" className="w-3 h-3 grayscale" />
-                           {item.balances?.sol?.amount?.toFixed(4) || "0.0000"} SOL
-                        </span>
-                        <span className="text-gray-400 truncate w-32 text-right selection:bg-[#00FFA3]/30" title={item.addresses.solana}>{item.addresses.solana}</span>
+                  ) : (
+                    recentSeeds.map((item, idx) => (
+                      <div key={item.uid} className="flex px-2 py-1 hover:bg-[#0A0A0A] rounded text-[10px] md:text-xs group items-center transition-colors">
+                        <div className="w-[50px] md:w-[70px] text-[#444]">{(checked - recentSeeds.length + idx + 1).toString().padStart(7, '0')}</div>
+                        <div className="flex-1 text-[#00FFA3] opacity-60 group-hover:opacity-100 truncate pr-2 md:pr-4">{item.seed}</div>
+                        <div className="text-[#333] shrink-0 font-bold">NUL</div>
                       </div>
-                    )}
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 2. START, TIMER, AND CHECKED (Stats & Controls) */}
+            <div className="flex flex-col xl:flex-row gap-3 md:gap-4 shrink-0">
+               {/* Controls */}
+               <div className="flex-1 border border-[#222] rounded-xl bg-[#020202] p-3 shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex items-center gap-3 md:gap-4">
+                  {isScanning ? (
+                    <button onClick={stopScanning} className="h-10 md:h-12 px-6 bg-[#1a0505] text-[#ff4444] text-xs font-bold border border-[#ff4444]/30 rounded-lg hover:bg-[#ff4444]/10 transition-all uppercase tracking-widest flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(255,0,0,0.1)] shrink-0">
+                      <Square size={14} fill="currentColor" /> Stop
+                    </button>
+                  ) : (
+                    <button onClick={startScanning} disabled={rpcs.length === 0} className={`h-10 md:h-12 px-6 ${rpcs.length === 0 ? 'bg-[#111] text-[#444] border-[#222]' : 'bg-[#002211] text-[#00FFA3] border-[#00FFA3]/30 hover:bg-[#00FFA3]/10 shadow-[0_0_15px_rgba(0,255,163,0.1)]'} text-xs font-bold border rounded-lg transition-all uppercase tracking-widest flex items-center justify-center gap-2 shrink-0`}>
+                      <Play size={14} fill="currentColor" /> Start
+                    </button>
+                  )}
+                  
+                  <div className="flex-1 flex flex-col justify-center">
+                    <div className="text-[9px] text-[#777] uppercase tracking-widest mb-1 hidden md:block">Intensity</div>
+                    <div className="flex items-center gap-2">
+                       <input type="range" min="1" max="200" value={scanIntensity} onChange={(e) => setScanIntensity(Number(e.target.value))} disabled={isScanning} className="w-full max-w-[150px] h-1 bg-[#222] rounded-full appearance-none accent-[#00FFA3] cursor-pointer" />
+                       <span className="text-[9px] text-[#00FFA3] font-mono">{scanIntensity}</span>
+                    </div>
+                  </div>
+               </div>
+               
+               {/* Stats Row */}
+               <div className="flex flex-1 gap-2 md:gap-3">
+                 <div className="flex-1 p-2 md:p-3 border border-[#222] rounded-xl bg-[#050505] relative overflow-hidden flex flex-col justify-center shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+                   <div className="text-[9px] md:text-[10px] text-[#666] uppercase tracking-widest mb-0.5">Timer</div>
+                   <div className="text-sm md:text-lg font-mono text-white font-bold">{formatTime(timeElapsed)}</div>
                  </div>
-              )
-            })}
+                 <div className="flex-1 p-2 md:p-3 border border-[#222] rounded-xl bg-[#050505] relative overflow-hidden flex flex-col justify-center shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+                   <div className="text-[9px] md:text-[10px] text-[#666] uppercase tracking-widest mb-0.5">Speed</div>
+                   <div className="text-sm md:text-lg font-mono text-white font-bold">{scanSpeed.toLocaleString()} /s</div>
+                 </div>
+                 <div className="flex-1 p-2 md:p-3 border border-[#222] rounded-xl bg-[#050505] relative overflow-hidden flex flex-col justify-center shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+                   <div className="text-[9px] md:text-[10px] text-[#666] uppercase tracking-widest mb-0.5">Checked</div>
+                   <div className="text-sm md:text-lg font-mono text-white font-bold">{checked.toLocaleString()}</div>
+                 </div>
+               </div>
+            </div>
+
+            {/* 3. FOUND */}
+            <div className={`flex-1 ${found.length > 0 ? 'shrink-0 min-h-[400px]' : 'shrink-0 max-h-[150px]'} flex flex-col border border-[#222] rounded-xl bg-[#020202] shadow-[0_4px_20px_rgba(0,0,0,0.5)] overflow-hidden transition-all duration-500`}>
+               <div className="h-10 md:h-12 border-b border-[#111] bg-[#0A0A0A] flex items-center px-4 justify-between shrink-0">
+                 <h2 className="text-[10px] md:text-[11px] text-[#DC1FFF] font-bold uppercase tracking-widest flex items-center gap-2">
+                   <CheckCircle2 size={12} className="text-[#DC1FFF]" /> Found ({found.length})
+                 </h2>
+                 <div className="flex items-center gap-3">
+                   <span className="text-[#00FFA3] font-mono text-[10px] md:text-xs font-bold">${totalValue.toFixed(2)}</span>
+                   {found.length > 0 && (
+                     <button onClick={exportFoundWallets} className="text-[#DC1FFF] hover:text-white transition-colors p-1 bg-[#111] rounded border border-[#333]">
+                       <Download size={14} />
+                     </button>
+                   )}
+                 </div>
+               </div>
+               
+               <div className="flex-1 overflow-y-auto p-3 md:p-4">
+                 {found.length === 0 ? (
+                   <div className="flex flex-col items-center justify-center h-full text-[#333] gap-3">
+                     <CheckCircle2 size={30} className="opacity-20 text-[#DC1FFF]" />
+                     <div className="text-[10px] font-bold tracking-widest uppercase">Storage empty</div>
+                   </div>
+                 ) : (
+                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+                      {found.map((item, i) => {
+                         const d = new Date(item.timestamp);
+                         return (
+                           <div key={i} className="border border-[#222] bg-[#050505] p-3 md:p-4 rounded-xl relative group overflow-hidden">
+                             <div className="absolute top-0 right-0 bg-[#00FFA3]/10 text-[#00FFA3] px-3 py-1 text-[10px] font-bold border-b border-l border-[#00FFA3]/20 rounded-bl-lg z-10">
+                               +${item.totalValue.toFixed(2)}
+                             </div>
+                             
+                             <div className="flex items-center justify-between mb-3">
+                               <div className="text-[9px] text-[#555] font-mono">{isNaN(d.getTime()) ? 'UNKNOWN' : d.toLocaleTimeString()}</div>
+                               <button onClick={() => removeWallet(i)} className="text-[#555] hover:text-[#ff4444] transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100 p-1 md:-m-1">
+                                 <Trash2 size={12} />
+                               </button>
+                             </div>
+                             
+                             <div className="mb-3 relative z-10">
+                               <div className="text-[8px] md:text-[9px] text-[#777] font-bold tracking-widest uppercase mb-1 flex items-center gap-1"><Key size={10} className="text-[#00FFA3]"/> Mnemonic</div>
+                               <div className="text-[10px] md:text-[11px] text-[#eee] font-mono break-all bg-[#0A0A0A] p-2 rounded-lg border border-[#111] selection:bg-[#DC1FFF]/30">
+                                 {item.seed}
+                               </div>
+                             </div>
+                             
+                             <div className="relative z-10">
+                               <div className="text-[8px] md:text-[9px] text-[#777] font-bold tracking-widest uppercase mb-1 flex items-center gap-1"><CheckCircle2 size={10} className="text-[#DC1FFF]"/> Validated Balance</div>
+                               <div className="flex justify-between items-center bg-[#0A0A0A] p-2 rounded-lg border border-[#111]">
+                                 <span className="text-[9px] md:text-[10px] text-[#888] font-mono truncate pr-2" title={item.addresses?.solana}>{item.addresses?.solana || 'N/A'}</span>
+                                 <span className="text-[10px] md:text-[11px] font-bold text-[#00FFA3] shrink-0">{item.balances?.sol?.amount?.toFixed(4) || "0.0000"}</span>
+                               </div>                             
+                             </div>
+                           </div>
+                         )
+                      })}
+                   </div>
+                 )}
+               </div>
+            </div>
+
           </div>
         )}
-      </div>
 
+
+        {/* PAGE 2: NETWORK */}
+        {activePage === 'network' && (
+          <div className="absolute inset-0 flex flex-col h-full overflow-hidden p-2 md:p-4 gap-3 md:gap-4 bg-gradient-to-b from-[#0a0a0a] to-[#050505]">
+            
+            {/* Top Node Management */}
+            <div className="w-full border border-[#222] rounded-xl bg-[#020202] flex flex-col shrink-0 overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
+               <div className="p-3 md:p-4 border-b border-[#111] bg-[#0A0A0A] flex flex-col md:flex-row gap-4 items-center justify-between">
+                   <div className="flex items-center gap-3 w-full md:w-auto shrink-0">
+                     <h2 className="text-[9px] md:text-[10px] text-[#777] font-bold tracking-widest uppercase flex items-center gap-2 whitespace-nowrap"><Wifi size={14} className="text-[#00FFA3]" /> Add Node</h2>
+                     <div className="flex gap-2 w-full md:w-[300px]">
+                        <input type="text" value={newRpc} onChange={(e) => setNewRpc(e.target.value)} placeholder="https://..." className="flex-1 min-w-0 bg-[#050505] border border-[#333] text-[10px] h-9 px-3 rounded-lg text-white focus:border-[#00FFA3] transition-colors outline-none font-mono" disabled={isScanning || isAddingRpc} />
+                        <button onClick={addRpc} disabled={!newRpc || isScanning || isAddingRpc} className="bg-[#111] border border-[#333] h-9 px-4 rounded-lg text-[10px] font-bold text-white hover:bg-[#222] disabled:opacity-50 transition-colors uppercase tracking-widest shrink-0">
+                          {isAddingRpc ? '...' : 'Add'}
+                        </button>
+                     </div>
+                   </div>
+
+                   <div className="flex items-center gap-4 w-full md:w-auto h-9">
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[9px] text-[#555] font-bold tracking-widest uppercase">Total Nodes:</span>
+                        <span className="text-[10px] text-[#00FFA3] font-mono">{rpcs.length}</span>
+                      </div>
+                      
+                      <button onClick={() => setIsNodeFullView(!isNodeFullView)} className="bg-[#111] border border-[#333] h-9 px-4 rounded-lg text-[10px] font-bold text-white hover:bg-[#222] transition-colors uppercase tracking-widest flex items-center gap-2 ml-auto">
+                         {isNodeFullView ? <ChevronUp size={12}/> : <ChevronDown size={12}/>} Full View
+                      </button>
+                   </div>
+               </div>
+
+               {/* Router Table Box */}
+               <div className={`bg-[#050505] overflow-y-auto transition-all ${isNodeFullView ? 'max-h-[300px] p-3' : 'max-h-[60px] p-3'}`}>
+                 {rpcs.length === 0 ? (
+                   <div className="text-[10px] text-[#444] text-center font-mono">No nodes added.</div>
+                 ) : isNodeFullView ? (
+                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                     {rpcs.map((rpc, i) => {
+                        const stat = rpcStatus[rpc];
+                        return (
+                          <div key={i} className="border border-[#222] bg-[#0A0A0A] p-2.5 rounded-xl relative group flex flex-col hover:border-[#333] transition-colors">
+                             <div className="flex items-center justify-between mb-1.5">
+                               <div className="flex items-center gap-2">
+                                 <div className={`w-2 h-2 rounded-full ${stat?.status === 'connected' ? 'bg-[#00FFA3] shadow-[0_0_5px_#00FFA3]' : stat?.status === 'checking' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`}></div>
+                                 <span className="text-[10px] text-[#aaa] font-bold uppercase tracking-widest">Node {i + 1}</span>
+                               </div>
+                               <div className="flex items-center gap-2">
+                                  {stat?.latency && <span className="text-[8px] text-[#00FFA3] font-mono bg-[#00FFA3]/10 px-1.5 py-0.5 rounded shadow-[0_0_5px_rgba(0,255,163,0.1)]">{stat.latency}ms</span>}
+                                  <button onClick={() => removeRpc(rpc)} disabled={isScanning || rpcs.length <= 1} className="text-[#555] hover:text-[#ff4444] transition-opacity disabled:opacity-30 p-1 bg-[#111] rounded md:bg-transparent -m-1"><Trash2 size={12} /></button>
+                               </div>
+                             </div>
+                             <div className="text-[9px] text-[#666] font-mono break-all leading-tight">{rpc}</div>
+                          </div>
+                        )
+                     })}
+                   </div>
+                 ) : (
+                   /* Single URL View */
+                   <div className="border border-[#222] bg-[#0A0A0A] p-2 rounded-lg flex items-center justify-between">
+                     <div className="flex items-center gap-3 w-full shrink-0 truncate">
+                        <div className={`w-2 h-2 rounded-full shrink-0 ${rpcStatus[rpcs[0]]?.status === 'connected' ? 'bg-[#00FFA3] shadow-[0_0_5px_#00FFA3]' : rpcStatus[rpcs[0]]?.status === 'checking' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`}></div>
+                        <span className="text-[10px] text-[#aaa] font-bold uppercase tracking-widest shrink-0">Node 1</span>
+                        <div className="text-[9px] text-[#666] font-mono truncate">{rpcs[0]}</div>
+                     </div>
+                     <div className="flex items-center gap-2 shrink-0">
+                        {rpcStatus[rpcs[0]]?.latency && <span className="text-[8px] text-[#00FFA3] font-mono bg-[#00FFA3]/10 px-1.5 py-0.5 rounded shadow-[0_0_5px_rgba(0,255,163,0.1)]">{rpcStatus[rpcs[0]].latency}ms</span>}
+                        <button onClick={() => removeRpc(rpcs[0])} disabled={isScanning || rpcs.length <= 1} className="text-[#555] hover:text-[#ff4444] transition-opacity disabled:opacity-30 p-1"><Trash2 size={12} /></button>
+                     </div>
+                   </div>
+                 )}
+               </div>
+            </div>
+            
+            {/* Bottom Network Traffic (Huge size) */}
+            <div className="flex-1 flex flex-col md:flex-row gap-3 md:gap-4 overflow-hidden">
+               <div className="flex-1 flex flex-col border border-[#222] rounded-xl bg-[#030303] overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.5)] relative h-full">
+                  <div className="h-10 bg-[#0A0A0A] border-b border-[#111] flex items-center justify-between px-4 shrink-0">
+                    <span className="text-[#00FFA3] text-[9px] tracking-widest font-bold uppercase flex items-center gap-2"><Activity size={12}/> TX Outbound</span>
+                    <span className="text-[#555] text-[10px] font-mono">{networkLogs.filter(l => l.msg.includes('[REQ]')).length} Pkts</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 flex flex-col justify-end">
+                    <div className="space-y-1">
+                      {networkLogs.filter(l => l.msg.includes('[REQ]')).length === 0 ? <div className="text-center text-[#333] text-[10px] uppercase tracking-widest">No tx outbound</div> : 
+                        networkLogs.filter(l => l.msg.includes('[REQ]')).map(log => (
+                          <div key={log.uid} className="text-[10px] text-[#00FFA3]/50 font-mono break-all pl-2 border-l-2 border-[#00FFA3]/20 py-0.5">
+                            {log.msg.replace('[REQ] ', '-> ')}
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+               </div>
+               
+               <div className="flex-1 flex flex-col border border-[#222] rounded-xl bg-[#030303] overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.5)] relative h-full">
+                  <div className="h-10 bg-[#0A0A0A] border-b border-[#111] flex items-center justify-between px-4 shrink-0">
+                    <span className="text-[#DC1FFF] text-[9px] tracking-widest font-bold uppercase flex items-center gap-2"><Database size={12}/> RX Inbound</span>
+                    <span className="text-[#555] text-[10px] font-mono">{networkLogs.filter(l => l.msg.includes('[RES]') || l.msg.includes('[ERR]')).length} Pkts</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 flex flex-col justify-end">
+                    <div className="space-y-1">
+                      {networkLogs.filter(l => l.msg.includes('[RES]') || l.msg.includes('[ERR]')).length === 0 ? <div className="text-center text-[#333] text-[10px] uppercase tracking-widest">No rx inbound</div> : 
+                        networkLogs.filter(l => l.msg.includes('[RES]') || l.msg.includes('[ERR]')).map(log => (
+                          <div key={log.uid} className={`text-[10px] font-mono break-all pl-2 border-l-2 py-0.5 ${log.msg.includes('[ERR]') ? 'text-red-500/70 border-red-500/30' : 'text-[#DC1FFF]/60 border-[#DC1FFF]/30'}`}>
+                            {log.msg.replace('[RES] ', '<- ').replace('[ERR] ', '! ')}
+                          </div>
+                        ))
+                      }
+                    </div>
+                  </div>
+               </div>
+            </div>
+          </div>
+        )}\n\n        </main>
     </div>
   );
 }
+
 

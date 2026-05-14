@@ -131,6 +131,71 @@ async function scanWallet(seedPhrase: string, rpcs: string[]) {
   };
 }
 
+async function checkSolanaBalancesBatch(addresses: string[], rpcs: string[]) {
+  let lastError = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const url = getActiveRpc(rpcs);
+      const host = new URL(url).hostname;
+      self.postMessage({ type: 'log', data: `[REQ] Batch ${addresses.length} > ${host}` });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', 
+          id: 1, 
+          method: 'getMultipleAccounts', 
+          params: [addresses, { encoding: 'jsonParsed' }]
+        }),
+        signal: controller.signal
+      }).catch(err => {
+        clearTimeout(timeoutId);
+        throw err;
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.result !== undefined) {
+          const accounts = data.result.value || [];
+          self.postMessage({ type: 'log', data: `[RES] ${host} > batch of ${addresses.length} scanned` });
+          return accounts.map((acc: any) => {
+             if (acc && acc.lamports) {
+                return acc.lamports / 1e9;
+             }
+             return 0;
+          });
+        }
+      } else if (res.status === 429) {
+        self.postMessage({ type: 'log', data: `[ERR] ${host} > 429 Rate Limited` });
+        await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000));
+        lastError = new Error('Rate limited');
+      } else if (res.status === 401 || res.status === 403) {
+        self.postMessage({ type: 'log', data: `[ERR] ${host} > 403 Forbidden` });
+        await new Promise(r => setTimeout(r, 5000));
+        lastError = new Error('Auth/Quota issue');
+      } else if (res.status >= 500) {
+        self.postMessage({ type: 'log', data: `[ERR] ${host} > ${res.status} Server Error` });
+        await new Promise(r => setTimeout(r, 1000));
+        lastError = new Error('Server error');
+      }
+    } catch (e: any) {
+       let errorMsg = e.message || 'Network Error';
+       if (e.name === 'AbortError' || errorMsg.includes('aborted')) {
+         errorMsg = 'Timeout (Queued too long)';
+       }
+       self.postMessage({ type: 'log', data: `[ERR] Fetch > ${errorMsg}` });
+       await new Promise(r => setTimeout(r, 200));
+       lastError = e;
+    }
+  }
+  throw lastError || new Error("Failed to check balances");
+}
+
 let isScanning = false;
 let currentRpcs: string[] = [];
 
@@ -142,14 +207,13 @@ self.onmessage = async (e) => {
     currentRpcs = rpcs;
     updatePrices();
     
-    // Scale the concurrency dynamically
-    const workerConcurrency = concurrency || 5;
-
+    const requestedLoad = concurrency || 5;
+    
     // Start multiple parallel loops
-    for (let i = 0; i < workerConcurrency; i++) {
+    for (let i = 0; i < requestedLoad; i++) {
         runScan();
-        // Stagger slightly dynamically
-        await new Promise(r => setTimeout(r, 100 + Math.random() * 50));
+        // Stagger slightly
+        await new Promise(r => setTimeout(r, 50));
     }
   } else if (type === 'stop') {
     isScanning = false;
@@ -158,14 +222,15 @@ self.onmessage = async (e) => {
 
 async function runScan() {
   while (isScanning) {
-    const seed = bip39.generateMnemonic(128); // 12 words
+    const seed = bip39.generateMnemonic(128);
+    
     try {
       const result = await scanWallet(seed, currentRpcs);
       self.postMessage({ type: 'result', data: result });
       
       await new Promise(r => setTimeout(r, 5));
     } catch (e) {
-      await new Promise(r => setTimeout(r, 100)); // slightly longer delay on error
+      await new Promise(r => setTimeout(r, 500)); // slightly longer delay on error
     }
   }
 }
