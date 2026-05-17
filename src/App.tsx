@@ -36,6 +36,7 @@ export default function App() {
 
   const [checked, setChecked] = useState(0); 
   const [resCount, setResCount] = useState(0);
+  const [generatedCount, setGeneratedCount] = useState(0);
   const [resSpeed, setResSpeed] = useState(0);
   const [found, setFound] = useState<any[]>([]);
   const [totalValue, setTotalValue] = useState(0); 
@@ -46,20 +47,21 @@ export default function App() {
   const [activePage, setActivePage] = useState<'scanner' | 'network'>('scanner');
   const [networkLogs, setNetworkLogs] = useState<{uid: string, msg: string, time: number}[]>([]);
   
-  const pendingUpdatesRef = useRef({ checked: 0, resCount: 0, logs: [] as {uid:string, msg:string, time:number}[] });
+  const pendingUpdatesRef = useRef({ checked: 0, resCount: 0, generated: 0, logs: [] as {uid:string, msg:string, time:number}[] });
 
   const flushUpdates = useCallback(() => {
     const changes = pendingUpdatesRef.current;
-    if (changes.checked > 0 || changes.resCount > 0 || changes.logs.length > 0) {
+    if (changes.checked > 0 || changes.resCount > 0 || changes.generated > 0 || changes.logs.length > 0) {
       if (changes.checked > 0) setChecked(c => c + changes.checked);
       if (changes.resCount > 0) setResCount(c => c + changes.resCount);
+      if (changes.generated > 0) setGeneratedCount(c => c + changes.generated);
       if (changes.logs.length > 0) {
          setNetworkLogs(prev => {
             const newLogs = [...prev, ...changes.logs];
             return newLogs.length > 60 ? newLogs.slice(-60) : newLogs;
          });
       }
-      pendingUpdatesRef.current = { checked: 0, resCount: 0, logs: [] };
+      pendingUpdatesRef.current = { checked: 0, resCount: 0, generated: 0, logs: [] };
     }
   }, []);
 
@@ -238,10 +240,11 @@ export default function App() {
   }, [networkLogs, activePage]);
 
   const [scanSpeed, setScanSpeed] = useState(0);
-  const [recentSeeds, setRecentSeeds] = useState<{uid: string, seed: string}[]>([]);
+  const [recentSeeds, setRecentSeeds] = useState<{uid: string, seed: string, isValid?: boolean}[]>([]);
   const scanSpeedRef = useRef({ lastCount: 0, lastResCount: 0, lastTime: Date.now() });
   const checkedRef = useRef(0);
   const resCountRef = useRef(0);
+  const generatedCountRef = useRef(0);
 
   useEffect(() => {
     checkedRef.current = checked;
@@ -252,12 +255,16 @@ export default function App() {
   }, [resCount]);
 
   useEffect(() => {
+    generatedCountRef.current = generatedCount;
+  }, [generatedCount]);
+
+  useEffect(() => {
     const int = setInterval(() => {
       if (isScanningRef.current) {
         setTimeElapsed(prev => prev + 1);
         
         const now = Date.now();
-        const diffCount = checkedRef.current - scanSpeedRef.current.lastCount;
+        const diffCount = generatedCountRef.current - scanSpeedRef.current.lastCount;
         const diffResCount = resCountRef.current - scanSpeedRef.current.lastResCount;
         const diffTime = (now - scanSpeedRef.current.lastTime) / 1000;
         
@@ -266,7 +273,7 @@ export default function App() {
           setResSpeed(Math.round(diffResCount / diffTime));
         }
         
-        scanSpeedRef.current = { lastCount: checkedRef.current, lastResCount: resCountRef.current, lastTime: now };
+        scanSpeedRef.current = { lastCount: generatedCountRef.current, lastResCount: resCountRef.current, lastTime: now };
       }
     }, 1000);
     return () => clearInterval(int);
@@ -354,8 +361,15 @@ export default function App() {
   // Scanning loop logic
   const checkBalance = async (address: string, urls: string[], signal?: AbortSignal) => {
     // Pick random working url
-    const workingUrls = urls.filter(u => rpcStatus[u]?.status === 'connected');
-    const url = workingUrls.length > 0 ? workingUrls[Math.floor(Math.random() * workingUrls.length)] : urls[0];
+    const now = Date.now();
+    const workingUrls = urls.filter(u => rpcStatus[u]?.status === 'connected' && (rateLimitsRef.current[u] || 0) < now);
+    
+    if (workingUrls.length === 0) {
+      await new Promise(r => setTimeout(r, 1000));
+      return 0;
+    }
+    
+    const url = workingUrls[Math.floor(Math.random() * workingUrls.length)];
     if (!url) return 0;
 
     const shortUrl = new URL(url).hostname;
@@ -377,6 +391,10 @@ export default function App() {
         signal
       });
       
+      if (res.status === 429) {
+          rateLimitsRef.current[url] = Date.now() + 5000; // backoff for 5 seconds
+          throw new Error('Rate Limited'); 
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const balanceLamports = data?.result?.value || 0;
@@ -405,23 +423,41 @@ export default function App() {
   };
 
   const activeRequestsRef = useRef(0);
+  const rateLimitsRef = useRef<Record<string, number>>({});
   const abortControllerRef = useRef<AbortController | null>(null);
   
   const generateLoop = useCallback(() => {
     if (!isScanningRef.current) return;
     
-    const workingUrls = rpcs.filter(u => rpcStatus[u]?.status === 'connected');
+    const now = Date.now();
+    const workingUrls = rpcs.filter(u => rpcStatus[u]?.status === 'connected' && (rateLimitsRef.current[u] || 0) < now);
     const nodesCount = Math.max(1, workingUrls.length);
     
     // Total requests per tick (generateLoop runs every 200ms, so 5 times a second)
-    const count = Math.ceil((scanIntensity / 5) * nodesCount);
+    const maxActiveRequests = Math.max(10, Math.min(600, nodesCount * 15));
+    const availableSlots = maxActiveRequests - activeRequestsRef.current;
     
-    const batch: { uid: string, seed: string }[] = [];
+    if (availableSlots <= 0) {
+        // Wait till next tick if we're maxed out, so we don't generate wallets we can't check
+        setTimeout(generateLoop, 200); 
+        return;
+    }
+
+    let count = Math.ceil((scanIntensity / 5) * nodesCount);
+    count = Math.min(count, availableSlots); // Never generate more than we can currently check
     
+    const batch: { uid: string, seed: string, isValid: boolean }[] = [];
+    const wordlist = bip39.wordlists.english;
+    
+    // Generate 100% Valid Checksum Method: Uses cryptographic entropy to 
+    // generate perfectly valid 12-word BIP-39 mnemonics directly. 
     for (let i = 0; i < count; i++) {
+        // 128 bits of entropy generates exactly 12 words with a valid calculated checksum
+        const phrase = bip39.generateMnemonic(128);
         batch.push({
             uid: Math.random().toString(36).substring(7),
-            seed: bip39.generateMnemonic()
+            seed: phrase,
+            isValid: true
         });
     }
 
@@ -429,15 +465,17 @@ export default function App() {
         const newest = [...batch, ...prev];
         return newest.slice(0, 50); // keep last 50
     });
-
-    // Ensure we don't completely spam the browser when too high
-    // Most browsers allow ~6 concurrent requests per domain. So 6 * nodesCount is the physical limit,
-    // plus a little buffer for queuing. Limiting to physical bounds ensures UI remains fast above 90fps.
-    const maxActiveRequests = Math.max(10, Math.min(600, nodesCount * 15));
     
+    pendingUpdatesRef.current.generated += count;
+
     if (rpcs.length > 0) {
         batch.forEach(item => {
-            if (activeRequestsRef.current >= maxActiveRequests) return;
+            if (!item.isValid) {
+                // Skipped due to invalid checksum (if any happen to be invalid)
+                // We do not increment the 'checked' counter here
+                return;
+            }
+            if (activeRequestsRef.current >= maxActiveRequests) return; // Should be handled by availableSlots
             const checkInBackground = async () => {
                 activeRequestsRef.current++;
                 try {
@@ -467,8 +505,6 @@ export default function App() {
                     // Don't continue if stopped
                     if (!isScanningRef.current) return;
                     
-                    pendingUpdatesRef.current.checked++;
-
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 8000); 
                     
@@ -503,6 +539,7 @@ export default function App() {
                 } finally {
                     activeRequestsRef.current--;
                     pendingUpdatesRef.current.resCount++;
+                    pendingUpdatesRef.current.checked++;
                 }
             };
             checkInBackground();
@@ -610,10 +647,14 @@ export default function App() {
             {activePage === 'scanner' ? (
               <div className="flex-1 overflow-y-auto p-1 font-mono text-[11px] leading-relaxed" ref={logContainerRef}>
                  {recentSeeds.length === 0 ? <div className="text-[#333] text-center mt-4">Waiting for engine...</div> : 
-                   recentSeeds.map((item, idx) => (
-                      <div key={item.uid} className="flex items-start text-[#555] break-words leading-tight py-[1px]">
-                        <Search size={11} className="text-[#DC1FFF] mt-[1px] shrink-0 mr-1 opacity-70" />
-                        <span className="opacity-80 hover:opacity-100 transition-opacity text-[#666]">{item.seed}</span>
+                     recentSeeds.map((item, idx) => (
+                      <div key={item.uid} className="flex flex-col items-start text-[#555] break-words leading-tight py-[1px] mb-1">
+                        <div className="flex items-start">
+                          <Search size={11} className={`${item.isValid ? 'text-[#DC1FFF]' : 'text-red-500'} mt-[1px] shrink-0 mr-1 opacity-70`} />
+                          <span className={`opacity-80 hover:opacity-100 transition-opacity ${item.isValid ? 'text-[#14F195]' : 'text-[#666] line-through decoration-red-500/30'}`}>{item.seed}</span>
+                        </div>
+                        {!item.isValid && <span className="text-[9px] text-red-500/70 ml-[15px] italic">Invalid Checksum (Skipped)</span>}
+                        {item.isValid && <span className="text-[9px] text-[#14F195]/70 ml-[15px] italic">Valid Checksum - Checking Balance...</span>}
                       </div>
                    ))
                  }
@@ -658,12 +699,12 @@ export default function App() {
         <div className="border-t border-b border-[#222] bg-[#020202] py-1 flex items-center justify-between px-2 shrink-0">
            <div className="flex items-center gap-1.5 text-white">
              <Activity size={14} className="text-[#14F195]" />
-             <span className="font-bold text-[13px]">{scanSpeed.toLocaleString()} <span className="text-[#555] text-[11px] font-normal font-sans">w/s</span></span>
+             <span className="font-bold text-[13px]">{scanSpeed.toLocaleString()} <span className="text-[#555] text-[11px] font-normal font-sans">gen/s</span></span>
              <span className="font-bold text-[13px] ml-1">{resSpeed.toLocaleString()} <span className="text-[#555] text-[11px] font-normal font-sans">res/s</span></span>
            </div>
            <div className="flex items-center gap-1.5 text-white">
              <Key size={14} className="text-[#DC1FFF] transform -rotate-45" />
-             <span className="font-bold text-[13px]">{checked.toLocaleString()}</span>
+             <span className="font-bold text-[13px]">{checked.toLocaleString()} <span className="text-[#555] text-[11px] font-normal font-sans">valid checks</span></span>
            </div>
            <div className="flex items-center gap-1.5 text-white">
              <div className="w-2.5 h-2.5 rounded-full border-[1.5px] border-[#14F195] bg-transparent"></div>

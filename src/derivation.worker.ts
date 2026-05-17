@@ -27,13 +27,18 @@ self.onmessage = async (e) => {
   const results = [];
   
   try {
+    const wordlist = bip39.wordlists.english;
+
     for (let i = 0; i < batchSize; i++) {
-       const m = bip39.generateMnemonic();
-       const seedBuffer = bip39.mnemonicToSeedSync(m);
-       const derivedSeed = derivePath("m/44'/501'/0'/0'", seedBuffer.toString('hex')).key;
-       const keypair = Keypair.fromSeed(derivedSeed);
-       const address = keypair.publicKey.toBase58();
-       results.push({ mnemonic: m, address });
+        const m = bip39.generateMnemonic(128); // Generates 100% valid phrases
+        
+        if (bip39.validateMnemonic(m)) {
+            const seedBuffer = bip39.mnemonicToSeedSync(m);
+            const derivedSeed = derivePath("m/44'/501'/0'/0'", seedBuffer.toString('hex')).key;
+            const keypair = Keypair.fromSeed(derivedSeed);
+            const address = keypair.publicKey.toBase58();
+            results.push({ mnemonic: m, address });
+        }
     }
     
     self.postMessage({ id, results });
